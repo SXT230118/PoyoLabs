@@ -233,7 +233,7 @@ def index():
 
 @app.route('/dashboard')
 def dashboard():
-    """Serves the main Poyolab dashboard app."""
+    """Serves the main Poyolabs dashboard app."""
     return render_template('dashboard.html')
 
 if __name__ == '__main__':

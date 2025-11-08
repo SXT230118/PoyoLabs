@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poyolab - CauldronWatch</title>
+    <style>
+        /* Basic styles to make it look good for a hackathon */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            color: #f7b733; /* Potion gold */
+            text-align: center;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        .dashboard, .agent-panel {
+            background: #2a2a4e;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        h2 {
+            border-bottom: 2px solid #f7b733;
+            padding-bottom: 5px;
+        }
+        
+        /* Cauldron Styles */
+        #cauldron-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        .cauldron {
+            background: #3a3a6e;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .cauldron.anomaly {
+            background: #e74c3c; /* Red for anomaly */
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+        .cauldron-name { font-weight: bold; }
+        .level-bar-container {
+            background: #1a1a2e;
+            border-radius: 5px;
+            height: 20px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .level-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4facf7, #2ecc71);
+            width: 0%; /* Will be set by JS */
+            transition: width 0.5s ease;
+        }
+
+        /* Agent Chat Styles */
+        #chat-log {
+            height: 300px;
+            overflow-y: auto;
+            background: #1a1a2e;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        #chat-log div {
+            margin-bottom: 8px;
+        }
+        .chat-user { color: #82aaff; }
+        .chat-agent { color: #c3e88d; }
+        .chat-agent-plan {
+            color: #888;
+            font-style: italic;
+            font-size: 0.9em;
+            padding-left: 15px;
+            border-left: 2px solid #888;
+        }
+        #chat-input {
+            width: calc(100% - 10px);
+            padding: 8px;
+            border: none;
+            border-radius: 5px;
+            background: #3a3a6e;
+            color: #fff;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🔮 Poyolab Factory Monitor</h1>
+
+    <div class="container">
+        <div class="dashboard">
+            <h2>CauldronWatch Dashboard</h2>
+            <div id="cauldron-grid">
+                </div>
+        </div>
+
+        <div class="agent-panel">
+            <h2>Poyolab Agent</h2>
+            <div id="chat-log">
+                <div class="chat-agent">Welcome, Manager. I am monitoring the factory. What do you need?</div>
+            </div>
+            <form id="chat-form">
+                <input type="text" id="chat-input" placeholder="Ask your agent..." autocomplete="off">
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Get all the HTML elements we need
+        const cauldronGrid = document.getElementById('cauldron-grid');
+        const chatLog = document.getElementById('chat-log');
+        const chatForm = document.getElementById('chat-form');
+        const chatInput = document.getElementById('chat-input');
+        
+        // --- 1. EOG: Render the Cauldron Dashboard ---
+        
+        async function updateCauldronLevels() {
+            try {
+                // We fetch from the /api/cauldron/levels endpoint in app.py
+                const response = await fetch('/api/cauldron/levels');
+                const cauldrons = await response.json();
+                
+                cauldronGrid.innerHTML = ''; // Clear the grid
+                
+                for (const cid in cauldrons) {
+                    const data = cauldrons[cid];
+                    
+                    // Create the HTML element for the cauldron
+                    const cauldronEl = document.createElement('div');
+                    cauldronEl.classList.add('cauldron');
+                    if (data.anomaly) {
+                        cauldronEl.classList.add('anomaly');
+                    }
+                    
+                    const percent = data.level;
+                    
+                    cauldronEl.innerHTML = `
+                        <div class="cauldron-name">${data.name}</div>
+                        <div>${percent}% Full</div>
+                        <div class="level-bar-container">
+                            <div class="level-bar" style="width: ${percent}%"></div>
+                        </div>
+                    `;
+                    cauldronGrid.appendChild(cauldronEl);
+                }
+            } catch (error) {
+                console.error('Error fetching cauldron levels:', error);
+            }
+        }
+        
+        // --- 2. NVIDIA: Handle the Agent Chat ---
+        
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault(); // Stop the page from reloading
+            
+            const message = chatInput.value;
+            if (!message) return;
+            
+            addChatMessage(message, 'user');
+            chatInput.value = ''; // Clear the input
+            
+            try {
+                // We send the user's message to the /api/agent/chat endpoint
+                const response = await fetch('/api/agent/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+                
+                const agentData = await response.json();
+                
+                // Add the agent's multi-step plan (for the NVIDIA judges!)
+                if (agentData.agent_plan && agentData.agent_plan.length > 0) {
+                    agentData.agent_plan.forEach(step => {
+                        addChatMessage(step, 'agent-plan');
+                    });
+                }
+                
+                // Add the agent's final response
+                addChatMessage(agentData.agent_response, 'agent');
+                
+                // After the agent acts, update the dashboard
+                updateCauldronLevels();
+
+            } catch (error) {
+                console.error('Error chatting with agent:', error);
+                addChatMessage('Error connecting to the agent. Is the server running?', 'agent');
+            }
+        });
+        
+        function addChatMessage(message, sender) {
+            const messageEl = document.createElement('div');
+            if (sender === 'user') {
+                messageEl.className = 'chat-user';
+                messageEl.textContent = `> ${message}`;
+            } else if (sender === 'agent') {
+                messageEl.className = 'chat-agent';
+                messageEl.textContent = `🤖 ${message}`;
+            } else if (sender === 'agent-plan') {
+                messageEl.className = 'chat-agent-plan';
+                messageEl.textContent = `  ${message}`;
+            }
+            chatLog.appendChild(messageEl);
+            chatLog.scrollTop = chatLog.scrollHeight; // Auto-scroll
+        }
+
+        // --- 3. Start the Factory! ---
+        
+        // Update the levels when the page loads
+        updateCauldronLevels();
+        
+        // Keep the dashboard live-updating (like the EOG spec)
+        setInterval(updateCauldronLevels, 5000); // Update every 5 seconds
+    </script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Poyolabs</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@400;700&display=swap');
+
+        body {
+            font-family: 'Cinzel', serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            text-align: center;
+        }
+
+        /* Add a subtle animated background */
+        body::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse at 70% 30%, #4a00e0 0%, transparent 60%),
+                radial-gradient(ellipse at 30% 70%, #f7b733 0%, transparent 60%);
+            opacity: 0.15;
+            animation: slowSpin 20s linear infinite;
+        }
+
+        @keyframes slowSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .container {
+            position: relative; /* To appear above the background */
+            background: rgba(30, 30, 46, 0.85);
+            backdrop-filter: blur(5px);
+            padding: 40px 60px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid #f7b733a0;
+        }
+
+        h1 {
+            font-family: 'MedievalSharp', cursive;
+            font-size: 4rem;
+            color: #f7b733; /* Potion gold */
+            margin: 0 0 10px;
+            text-shadow: 0 0 10px #f7b733;
+        }
+
+        p {
+            font-size: 1.25rem;
+            color: #ccc;
+            margin-bottom: 30px;
+        }
+
+        .enter-button {
+            display: inline-block;
+            font-family: 'Cinzel', serif;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #1a1a2e;
+            background: #f7b733;
+            padding: 12px 30px;
+            border-radius: 5px;
+            text-decoration: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 0 20px #f7b733a0;
+            transition: all 0.3s ease;
+        }
+
+        .enter-button:hover {
+            background: #ffdead; /* Lighter gold */
+            box-shadow: 0 0 30px #f7b733;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>🔮 Poyolabs</h1>
+        <p>Intelligent Potion Factory Management</p>
+        
+        <a href="/dashboard" class="enter-button">
+            Enter the Factory
+        </a>
+    </div>
+
+</body>
+</html>
