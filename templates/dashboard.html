@@ -132,30 +132,38 @@
         
         // --- 1. EOG: Render the Cauldron Dashboard ---
         
-        async function updateCauldronLevels() {
+       async function updateCauldronLevels() {
             try {
-                // We fetch from the /api/cauldron/levels endpoint in app.py
+                // This API endpoint now returns an ARRAY of cauldrons
                 const response = await fetch('/api/cauldron/levels');
-                const cauldrons = await response.json();
+                const cauldrons = await response.json(); 
                 
                 cauldronGrid.innerHTML = ''; // Clear the grid
                 
-                for (const cid in cauldrons) {
-                    const data = cauldrons[cid];
+                // Loop over the ARRAY
+                for (const data of cauldrons) {
                     
                     // Create the HTML element for the cauldron
                     const cauldronEl = document.createElement('div');
                     cauldronEl.classList.add('cauldron');
+                    
+                    // The API data has 'current_level' and 'max_volume'
+                    const currentLevel = data.current_level || 0;
+                    const maxVolume = data.max_volume || 1; // Avoid divide by zero
+                    
+                    // Calculate percentage
+                    const percent = Math.round((currentLevel / maxVolume) * 100);
+                    
+                    // Check for anomaly flag
                     if (data.anomaly) {
                         cauldronEl.classList.add('anomaly');
                     }
                     
-                    const percent = data.level;
-                    
                     cauldronEl.innerHTML = `
                         <div class="cauldron-name">${data.name}</div>
                         <div>${percent}% Full</div>
-                        <div class="level-bar-container">
+                        <small>(${currentLevel.toFixed(0)}L / ${maxVolume}L)</small>
+                        <div class.level-bar-container">
                             <div class="level-bar" style="width: ${percent}%"></div>
                         </div>
                     `;
