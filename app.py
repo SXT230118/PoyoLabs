@@ -1239,12 +1239,12 @@ def _compute_rates_from_history(sample_limit=500):
     try:
         # Request the full historic range per the challenge guidance so rate computation
         # uses minute-by-minute samples across the whole dataset when possible.
-        raw = safe_get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20) or {}
+        raw = safe_get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20) or []
     except Exception:
         return {}
 
-    # Normalize to list of records
-    data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+    # API returns array directly according to documentation
+    data_list = raw if isinstance(raw, list) else []
     # Keep only the last N samples
     if not data_list:
         return {}
@@ -1905,8 +1905,8 @@ def data_historic():
             print("[HISTORIC] Failed to fetch /api/Data")
             return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
-        # Normalize wrapper shapes
-        data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+        # API returns array directly according to documentation
+        data_list = raw if isinstance(raw, list) else []
         print(f"[HISTORIC] Received {len(data_list)} records from API")
 
         # Parse filter times
@@ -2006,7 +2006,8 @@ def debug_ticket_matching(ticket_id):
         if data_raw is None:
             return jsonify({'error': 'Could not fetch historical data'}), 500
         
-        data_list = data_raw if isinstance(data_raw, list) else (data_raw.get('data') if isinstance(data_raw, dict) and isinstance(data_raw.get('data'), list) else [])
+        # API returns array directly according to documentation
+        data_list = data_raw if isinstance(data_raw, list) else []
         
         # Build series
         series_map = {}
@@ -2173,12 +2174,21 @@ def tickets_match():
     # normalize tickets list
     tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) and isinstance(tickets_raw.get('transport_tickets'), list) else (tickets_raw.get('tickets') if isinstance(tickets_raw, list) else []))
 
+    # Deduplicate tickets by ticket_id (API may return duplicates)
+    seen_tickets = {}
+    for t in tickets_list:
+        ticket_id = t.get('id') or t.get('ticket_id') or t.get('ticketId')
+        if ticket_id and ticket_id not in seen_tickets:
+            seen_tickets[ticket_id] = t
+    tickets_list = list(seen_tickets.values())
+
     # Fetch full historical data once
     data_raw = safe_get(EOG_API_BASE_URL + '/api/Data')
     if data_raw is None:
         return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
-    data_list = data_raw if isinstance(data_raw, list) else (data_raw.get('data') if isinstance(data_raw, dict) and isinstance(data_raw.get('data'), list) else [])
+    # API returns array directly according to documentation
+    data_list = data_raw if isinstance(data_raw, list) else []
 
     # Build per-cauldron time series map
     series_map = {}
