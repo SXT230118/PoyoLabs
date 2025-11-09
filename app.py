@@ -172,6 +172,44 @@ class AgentWorkflow:
         except Exception as e:
             return {'error': str(e)}
     
+    def _resolve_tickets_for_cauldron(self, cauldron_id):
+        """Resolve all tickets for a specific cauldron by calling PUT /api/Tickets/{id}"""
+        try:
+            # Get all unresolved tickets for this cauldron
+            tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets')
+            if not tickets_raw:
+                return
+            
+            tickets_list = tickets_raw if isinstance(tickets_raw, list) else (
+                tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) else []
+            )
+            
+            resolved_count = 0
+            for ticket in tickets_list:
+                ticket_cauldron = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
+                ticket_id = ticket.get('id') or ticket.get('ticket_id') or ticket.get('ticketId')
+                status = (ticket.get('status') or '').lower()
+                
+                # Only resolve tickets for this cauldron that aren't already resolved
+                if ticket_cauldron == cauldron_id and status not in ['resolved', 'completed']:
+                    try:
+                        # Call PUT endpoint to resolve the ticket
+                        url = f"{EOG_API_BASE_URL}/api/Tickets/{ticket_id}"
+                        response = requests.put(url, json={'status': 'resolved'}, timeout=5)
+                        if response.status_code == 200:
+                            resolved_count += 1
+                            print(f"[RESOLVE] Resolved ticket {ticket_id} for {cauldron_id}")
+                        else:
+                            print(f"[RESOLVE] Failed to resolve {ticket_id}: HTTP {response.status_code}")
+                    except Exception as e:
+                        print(f"[RESOLVE] Error resolving {ticket_id}: {e}")
+            
+            if resolved_count > 0:
+                print(f"[RESOLVE] Resolved {resolved_count} ticket(s) for {cauldron_id}")
+                
+        except Exception as e:
+            print(f"[RESOLVE] Error in _resolve_tickets_for_cauldron: {e}")
+    
     def _dispatch_courier(self, cauldron_id):
         """Tool: Dispatch courier to cauldron - initiates gradual draining"""
         if not cauldron_id:
@@ -260,6 +298,12 @@ class AgentWorkflow:
             
             print(f"[DISPATCH] Courier dispatched to {cauldron_static.get('name', cauldron_id)}")
             print(f"[DISPATCH] Draining {current_level:.1f}L at {drain_rate:.1f}L/min (~{estimated_minutes:.1f} min)")
+            
+            # Try to resolve any tickets for this cauldron
+            try:
+                self._resolve_tickets_for_cauldron(cauldron_id)
+            except Exception as e:
+                print(f"[DISPATCH] Warning: Could not resolve tickets for {cauldron_id}: {e}")
             
             return {
                 'status': 'success',
@@ -2174,10 +2218,16 @@ def tickets_match():
     tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) and isinstance(tickets_raw.get('transport_tickets'), list) else (tickets_raw.get('tickets') if isinstance(tickets_raw, list) else []))
 
     # Deduplicate tickets by ticket_id (API may return duplicates)
+    # AND filter out resolved/completed tickets
     seen_tickets = {}
     for t in tickets_list:
         ticket_id = t.get('id') or t.get('ticket_id') or t.get('ticketId')
-        if ticket_id and ticket_id not in seen_tickets:
+        # Check if ticket is resolved/completed
+        status = (t.get('status') or t.get('state') or t.get('resolved') or '').lower()
+        is_resolved = status in ['resolved', 'completed', 'done', 'closed', 'finished'] or t.get('resolved') == True
+        
+        # Only include unresolved tickets
+        if ticket_id and ticket_id not in seen_tickets and not is_resolved:
             seen_tickets[ticket_id] = t
     tickets_list = list(seen_tickets.values())
 
@@ -2239,24 +2289,31 @@ def tickets_match():
                 j += 1
                 
                 # Continue drain event even if there are small increases (fill_rate)
-                # But stop if level goes back above start or stays flat for too long
+                # But stop when level stops decreasing (stabilizes or increases significantly)
                 consecutive_increases = 0
+                consecutive_stable = 0
                 while j < n:
                     prev_v = series[j-1][1]
                     curr_v = series[j][1]
                     
-                    # If still decreasing overall, continue
-                    if curr_v < start_v:
+                    # If actively decreasing, continue
+                    if curr_v < prev_v - 0.5:  # Decreasing by >0.5L
                         end_t = series[j][0]
                         end_v = curr_v
                         consecutive_increases = 0
+                        consecutive_stable = 0
                         j += 1
-                    # Allow up to 2 consecutive small increases (fill_rate compensation)
+                    # Allow small increases (fill_rate) but limit them
                     elif curr_v > prev_v and consecutive_increases < 2:
                         consecutive_increases += 1
+                        consecutive_stable = 0
+                        j += 1
+                    # Allow stable/near-stable points but limit them
+                    elif abs(curr_v - prev_v) <= 0.5 and consecutive_stable < 3:
+                        consecutive_stable += 1
                         j += 1
                     else:
-                        # Drain has ended
+                        # Drain has ended (stopped decreasing, or too many stable/increasing points)
                         break
 
                 duration_min = (end_t - start_t).total_seconds() / 60.0
@@ -2340,22 +2397,22 @@ def tickets_match():
                 except Exception:
                     pass
 
-        # Determine suspicious: use reasonable thresholds for real-world variance
+        # Determine suspicious: use very lenient thresholds to minimize false positives
         suspicious = False
         diff = None
         reason = ''
         if amount is not None and calculated is not None:
             diff = round(amount - calculated, 2)
-            # Very reasonable threshold: Allow 20L difference OR 30% variance
+            # Very lenient threshold: Allow 50L difference OR 50% variance
             # (either condition alone makes it acceptable - only both together is suspicious)
-            if abs(diff) > 20 and abs(diff) > 0.3 * max(1.0, amount):
+            if abs(diff) > 50 and abs(diff) > 0.5 * max(1.0, amount):
                 suspicious = True
-                reason = f'Difference {diff}L exceeds both thresholds (>20L AND >30%).'
+                reason = f'Difference {diff}L exceeds both thresholds (>50L AND >50%).'
             else:
                 reason = f'Match OK (diff: {diff}L)'
         elif amount is not None and calculated is None:
             # No drain event found - only suspicious if it's a very large amount
-            if amount > 80:  # Only flag as suspicious if ticket is >80L (likely real fraud)
+            if amount > 100:  # Only flag as suspicious if ticket is >100L (likely real fraud)
                 suspicious = True
                 reason = f'No matching drain event found for large {amount}L ticket.'
             else:
