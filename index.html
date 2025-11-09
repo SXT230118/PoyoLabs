@@ -78,11 +78,35 @@
             letter-spacing: 1px;
             box-shadow: 0 0 20px #f7b733a0;
             transition: all 0.3s ease;
+            cursor: pointer;
+            border: none;
         }
 
         .enter-button:hover {
             background: #ffdead; /* Lighter gold */
             box-shadow: 0 0 30px #f7b733;
+            transform: scale(1.05);
+        }
+
+        .secondary-button {
+            display: inline-block;
+            font-family: 'Cinzel', serif;
+            font-size: 1rem;
+            font-weight: 400;
+            color: #f7b733;
+            background: transparent;
+            padding: 10px 25px;
+            border-radius: 5px;
+            text-decoration: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border: 2px solid #f7b733;
+            transition: all 0.3s ease;
+            margin-top: 15px;
+        }
+
+        .secondary-button:hover {
+            background: rgba(247, 183, 51, 0.1);
             transform: scale(1.05);
         }
     </style>
@@ -93,8 +117,14 @@
         <h1>🔮 Poyolabs</h1>
         <p>Intelligent Potion Factory Management</p>
         
-        <a href="/dashboard" class="enter-button">
-            Enter the Factory
+        <a href="/login" class="enter-button">
+            🔐 Login to Enter
+        </a>
+        
+        <br>
+        
+        <a href="/dashboard" class="secondary-button">
+            View Demo (Public)
         </a>
     </div>
 
