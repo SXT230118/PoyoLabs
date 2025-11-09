@@ -209,13 +209,6 @@
                 </div>
                 <div style="flex:1;min-width:400px;max-width:550px">
                     <h3>Network Map</h3>
-                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
-                        <div>
-                            <button id="layout-radial" class="layout-btn active">Radial</button>
-                            <button id="layout-force" class="layout-btn">Force</button>
-                        </div>
-                        <div style="color:#c8d0e0;font-size:13px">Layout:</div>
-                    </div>
                     <div id="network-map" style="background:#111229;padding:12px;border-radius:6px;height:420px;overflow:hidden;position:relative"></div>
                     <h3 style="margin-top:12px">Historic Playback</h3>
                     <div>
@@ -226,6 +219,7 @@
                     <div style="margin-top:8px">
                         <button id="run-match">Run Ticket Matching</button>
                         <button id="optimize-routes" style="margin-left:8px">Optimize Routes</button>
+                        <button id="reset-drains" style="margin-left:8px;background:#e74c3c;border-color:#c0392b" title="Clear all active drains">Reset Drains</button>
                         <button id="export-suspicious" style="margin-left:8px;display:none">Export Suspicious</button>
                     </div>
                     <div id="match-results" style="margin-top:8px;max-height:300px;overflow:auto;background:#0f1220;padding:8px;border-radius:6px;color:#ddd"></div>
@@ -248,7 +242,6 @@
         </div>
     </div>
 
-    <script src="https://d3js.org/d3.v7.min.js"></script>
     <script>
         // ========== NEW: User Profile Functions ==========
         async function loadUserProfile() {
@@ -509,19 +502,7 @@
         let playbackTimer = null;
 
         // layout control
-        let selectedLayout = 'radial';
-        const btnRadial = document.getElementById('layout-radial');
-        const btnForce = document.getElementById('layout-force');
-        function setLayout(l){
-            selectedLayout = l;
-            if(btnRadial) btnRadial.classList.toggle('active', l==='radial');
-            if(btnForce) btnForce.classList.toggle('active', l==='force');
-            loadNetwork();
-        }
-        if(btnRadial) btnRadial.addEventListener('click', ()=>setLayout('radial'));
-        if(btnForce) btnForce.addEventListener('click', ()=>setLayout('force'));
-
-        // Fetch network map and render either radial or force-directed SVG
+        // Fetch network map and render radial SVG
         async function loadNetwork() {
             try {
                 const [resNet, resStatus] = await Promise.all([fetch('/api/network'), fetch('/api/cauldron/status')]);
@@ -532,16 +513,10 @@
 
                 // Force a layout calculation and use actual dimensions
                 const rect = mapEl.getBoundingClientRect();
-                console.log('Network map rect:', rect); // Debug
                 const w = rect.width > 0 ? Math.floor(rect.width) - 24 : 500; // subtract padding
                 const h = rect.height > 0 ? Math.floor(rect.height) - 24 : 396; // subtract padding
-                console.log('Calculated dimensions:', w, h); // Debug
 
-                if (selectedLayout === 'force' && window.d3) {
-                    await renderForceNetwork(mapEl, data, statusList, w, h);
-                } else {
-                    await renderRadialNetwork(mapEl, data, statusList, w, h);
-                }
+                await renderRadialNetwork(mapEl, data, statusList, w, h);
             } catch (e) {
                 console.error('Could not load network', e);
             }
@@ -741,197 +716,6 @@
                 window._networkSvg = svg;
                 window._networkPositions = positions;
             }catch(e){ console.error('radial render failed', e); }
-        }
-
-        // Render force-directed layout using d3 (if available)
-        async function renderForceNetwork(mapEl, data, statusList, w, h){
-            if(!window.d3){ // fallback
-                return renderRadialNetwork(mapEl, data, statusList, w, h);
-            }
-            try{
-                console.log('Force layout received dimensions:', w, h); // Debug log
-                console.log('mapEl clientWidth/Height:', mapEl.clientWidth, mapEl.clientHeight);
-                
-                // Ensure we have valid dimensions
-                if (w <= 0 || h <= 0) {
-                    console.error('Invalid dimensions for force layout:', w, h);
-                    return;
-                }
-                
-                const cauldrons = (data && data.cauldrons) || [];
-                const edges = (data && (data.edges || (data.network && data.network.edges))) || [];
-                const market = (data && data.market) || { id: 'M', name: 'Market' };
-                
-                console.log('Creating', cauldrons.length, 'nodes'); // Debug
-                
-                // Create nodes, mark market specially - use stronger initial spread
-                const nodes = cauldrons.map((c, i) => {
-                    const angle = (i / cauldrons.length) * 2 * Math.PI;
-                    const radius = Math.min(w, h) * 0.25;
-                    return { 
-                        id: c.id, 
-                        name: c.name || c.id,
-                        isMarket: String(c.id) === String(market.id),
-                        // Initialize in a circle pattern for better spread
-                        x: w/2 + Math.cos(angle) * radius,
-                        y: h/2 + Math.sin(angle) * radius,
-                        vx: 0,
-                        vy: 0
-                    };
-                });
-                
-                const links = edges.map(e=>({ 
-                    source: e.from || e.src || e.u || e.a, 
-                    target: e.to || e.dst || e.v || e.b, 
-                    value: Number(e.travel_time_minutes||e.travel_time||1) 
-                }));
-
-                const svg = d3.select(mapEl).append('svg')
-                    .attr('width', w)
-                    .attr('height', h)
-                    .attr('viewBox', `0 0 ${w} ${h}`)
-                    .style('background','transparent')
-                    .style('display', 'block')
-                    .style('overflow', 'visible')
-                    .style('width', `${w}px`)
-                    .style('height', `${h}px`);
-                
-                console.log('SVG created with dimensions:', svg.attr('width'), svg.attr('height')); // Debug
-                
-                // draw links first (background)
-                const link = svg.append('g')
-                    .attr('stroke','#ff6f6f')
-                    .attr('stroke-opacity', 0.6)
-                    .selectAll('line')
-                    .data(links)
-                    .enter()
-                    .append('line')
-                    .attr('stroke-width', d => Math.max(2, Math.min(5, Math.round((d.value||1)/3))));
-                
-                // draw nodes on top
-                const node = svg.append('g')
-                    .selectAll('g')
-                    .data(nodes)
-                    .enter()
-                    .append('g');
-                
-                // Different styling for market vs cauldrons
-                node.append('circle')
-                    .attr('r', d => d.isMarket ? 36 : 20)
-                    .attr('fill', d => d.isMarket ? '#f7b733' : '#4facf7')
-                    .attr('stroke', '#fff')
-                    .attr('stroke-width', d => d.isMarket ? 3 : 2);
-                
-                node.append('text')
-                    .attr('x', 0)
-                    .attr('y', 5)
-                    .attr('fill', d => d.isMarket ? '#111' : '#fff')
-                    .attr('font-size', d => d.isMarket ? '14' : '12')
-                    .attr('text-anchor', 'middle')
-                    .attr('font-weight', 'bold')
-                    .text(d => {
-                        const name = d.name;
-                        return name.length > 10 ? name.substring(0, 9) + '…' : name;
-                    });
-                
-                node.append('title')
-                    .text(d => `${d.name} (${d.id})`);
-
-                const statusMap = {}; 
-                if (Array.isArray(statusList)) {
-                    statusList.forEach(s => { 
-                        statusMap[s.id] = Number(s.percent_full || ((s.current_level||0)/(s.max_volume||1))*100); 
-                    });
-                }
-                
-                function percentToColor(p){ 
-                    p = Math.max(0, Math.min(100, p)); 
-                    if(p <= 75){ 
-                        const t = p / 75; 
-                        const r = Math.round(76 + (241-76) * t); 
-                        const g = Math.round(175 + (196-175) * t); 
-                        const b = Math.round(247 + (15-247) * t); 
-                        return `rgb(${r},${g},${b})`; 
-                    } else { 
-                        const t = (p - 75) / 25; 
-                        const r = Math.round(241 + (231-241) * t); 
-                        const g = Math.round(196 + (76-196) * t); 
-                        const b = Math.round(15 + (60-15) * t); 
-                        return `rgb(${r},${g},${b})`; 
-                    } 
-                }
-
-                // define drag handlers first
-                function dragstarted(event, d){ 
-                    if(!event.active) sim.alphaTarget(0.3).restart(); 
-                    d.fx = d.x; 
-                    d.fy = d.y; 
-                }
-                function dragged(event, d){ 
-                    d.fx = event.x; 
-                    d.fy = event.y; 
-                }
-                function dragended(event, d){ 
-                    if(!event.active) sim.alphaTarget(0); 
-                    d.fx = null; 
-                    d.fy = null; 
-                }
-
-                function ticked(){
-                    // Constrain nodes to bounds first
-                    nodes.forEach(d => {
-                        const padding = d.isMarket ? 45 : 28;
-                        if (d.x == null) d.x = w/2;
-                        if (d.y == null) d.y = h/2;
-                        d.x = Math.max(padding, Math.min(w - padding, d.x));
-                        d.y = Math.max(padding, Math.min(h - padding, d.y));
-                    });
-                    
-                    // Then update visuals
-                    link.attr('x1', d => (d.source.x != null ? d.source.x : w/2))
-                        .attr('y1', d => (d.source.y != null ? d.source.y : h/2))
-                        .attr('x2', d => (d.target.x != null ? d.target.x : w/2))
-                        .attr('y2', d => (d.target.y != null ? d.target.y : h/2));
-                    
-                    node.attr('transform', d => `translate(${d.x != null ? d.x : w/2},${d.y != null ? d.y : h/2})`);
-                    
-                    const positions = {}; 
-                    nodes.forEach(n => { 
-                        positions[n.id] = { x: n.x, y: n.y, el: null }; 
-                    });
-                    window._networkPositions = positions;
-                    window._networkSvg = svg.node();
-                }
-
-                const sim = d3.forceSimulation(nodes)
-                    .force('link', d3.forceLink(links).id(d => d.id).distance(d => Math.max(60, d.value * 8)))
-                    .force('charge', d3.forceManyBody().strength(-400))
-                    .force('center', d3.forceCenter(w/2, h/2))
-                    .force('collide', d3.forceCollide().radius(d => d.isMarket ? 50 : 30))
-                    .force('x', d3.forceX(w/2).strength(0.05))
-                    .force('y', d3.forceY(h/2).strength(0.05))
-                    .alphaDecay(0.01) // Even slower cooling for better spread
-                    .on('tick', ticked);
-                
-                console.log('Force simulation initialized'); // Debug
-
-                // color cauldron nodes by percent (but not market)
-                node.selectAll('circle').attr('fill', d => { 
-                    if (d.isMarket) return '#f7b733';
-                    const pct = statusMap[d.id]; 
-                    return typeof pct === 'number' ? percentToColor(pct) : '#4facf7'; 
-                });
-
-                // attach drag behavior after functions and sim are defined
-                node.call(d3.drag()
-                    .on('start', dragstarted)
-                    .on('drag', dragged)
-                    .on('end', dragended));
-
-            }catch(e){ 
-                console.error('force render failed', e); 
-                return renderRadialNetwork(mapEl, data, statusList, w, h); 
-            }
         }
 
         // --- Greedy route optimizer (client-side prototype) ---
@@ -1405,14 +1189,44 @@
                     lbl.textContent = `Courier ${r.courier}` + (r.impossible ? ' (!!)' : '');
                     g.appendChild(lbl);
 
-                    svg.appendChild(g);
-
+                    // svg.appendChild(g);
+                    const container = svg.querySelector('g');
+                    if (container) {
+                        container.appendChild(g);
+                    }
+                    else {
+                        svg.appendChild(g);
+                    }
+                    
                     out.innerHTML += `Courier ${r.courier}: ${seq.join(' → ')}${r.impossible ? ' — UNREACHABLE' : ''}<br>`;
                 });
 
             } catch (err) {
                 console.error(err);
                 alert('Optimizer failed: ' + err);
+            }
+        });
+
+        // Reset Drains button handler
+        document.getElementById('reset-drains').addEventListener('click', async () => {
+            if (!confirm('Clear all active drains? This will stop all courier operations.')) {
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/drains/reset', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    alert(`✅ ${data.message}`);
+                    // Refresh the dashboard to show cleared drains
+                    updateCauldronLevels();
+                } else {
+                    alert(`❌ Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (err) {
+                console.error('Reset failed:', err);
+                alert('❌ Failed to reset drains: ' + err);
             }
         });
 

@@ -714,16 +714,17 @@ class AgentWorkflow:
             return {'type': 'cancel', 'description': 'Cancel pending action'}
         
         # Regular intent analysis
-        if any(word in msg_lower for word in ['suspicious', 'anomaly', 'ticket', 'discrepancy', 'problem', 'alert', 'issue']):
-            return {'type': 'investigate', 'description': 'Investigate discrepancies and anomalies'}
-        elif any(word in msg_lower for word in ['forecast', 'full', 'overflow', 'time', 'when', 'predict']):
-            return {'type': 'predict', 'description': 'Forecast fill times and overflow risks'}
-        elif any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
+        # CHECK DISPATCH FIRST - before predict (to catch "dispatch to all full cauldrons")
+        if any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
             # Check if it's a bulk dispatch request
-            if any(word in msg_lower for word in ['all', 'multiple', 'every', 'bulk', '50%', 'above', 'over', 'threshold']):
+            if any(word in msg_lower for word in ['all', 'multiple', 'every', 'bulk', '50%', 'above', 'over', 'threshold', 'half full', 'at least']):
                 return {'type': 'action_bulk', 'description': 'Dispatch couriers to multiple cauldrons'}
             else:
                 return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
+        elif any(word in msg_lower for word in ['suspicious', 'anomaly', 'ticket', 'discrepancy', 'problem', 'alert', 'issue']):
+            return {'type': 'investigate', 'description': 'Investigate discrepancies and anomalies'}
+        elif any(word in msg_lower for word in ['forecast', 'overflow', 'time', 'when', 'predict']):
+            return {'type': 'predict', 'description': 'Forecast fill times and overflow risks'}
         elif any(word in msg_lower for word in ['optimize', 'route', 'witch', 'efficient']):
             return {'type': 'optimize', 'description': 'Optimize courier routes for efficiency'}
         elif any(word in msg_lower for word in ['status', 'how', 'level', 'current', 'what']):
@@ -910,9 +911,12 @@ class AgentWorkflow:
     def _synthesize_response(self, user_message, intent, tool_results, steps):
         """Generate final response using Nemotron or fallback"""
         if self.client:
-            return self._nemotron_synthesis(user_message, intent, tool_results, steps)
-        else:
-            return self._fallback_synthesis(intent, tool_results)
+            response = self._nemotron_synthesis(user_message, intent, tool_results, steps)
+            # If Nemotron returns None or empty, use fallback
+            if response and response.strip():
+                return response
+            print("[Nemotron] Empty response, using fallback synthesis")
+        return self._fallback_synthesis(intent, tool_results)
     
     def _nemotron_synthesis(self, user_message, intent, tool_results, steps):
         """Use Nemotron to synthesize natural language response"""
@@ -945,13 +949,18 @@ class AgentWorkflow:
                 stream=False
             )
             
-            if hasattr(completion.choices[0], 'message'):
-                return completion.choices[0].message.content
-            return str(completion.choices[0])
+            if hasattr(completion.choices[0], 'message') and completion.choices[0].message:
+                content = completion.choices[0].message.content
+                if content and content.strip():
+                    return content
+                print("[Nemotron] Empty content from message")
+                return None
+            print("[Nemotron] No message attribute in completion")
+            return None
             
         except Exception as e:
             print(f"[Nemotron synthesis error]: {e}")
-            return self._fallback_synthesis(intent, tool_results)
+            return None  # Return None so _synthesize_response can use fallback
     
     def _fallback_synthesis(self, intent, tool_results):
         """Fallback response generation without Nemotron"""
@@ -1722,6 +1731,13 @@ if factory_static_data is None:
         "market": {},
         "couriers": []
     }
+
+# Clear any active drains on startup (fresh start)
+print("[init] Clearing all active drains (fresh app start)")
+with drains_lock:
+    active_drains.clear()
+with resolved_tickets_lock:
+    resolved_tickets.clear()
 
 # Global set to track cauldrons with suspicious tickets (populated by /api/tickets/match)
 suspicious_cauldrons = set()
@@ -2744,6 +2760,39 @@ def get_agent_insights():
     insights = agent.get_proactive_insights()
     
     return jsonify(insights)
+
+
+@app.route('/api/drains/reset', methods=['POST'])
+@requires_auth
+def reset_drains():
+    """
+    Manually reset all active drains.
+    Useful for clearing stuck drains or testing.
+    """
+    global active_drains, resolved_tickets, drains_lock, resolved_tickets_lock
+    
+    try:
+        with drains_lock:
+            count = len(active_drains)
+            active_drains.clear()
+        
+        with resolved_tickets_lock:
+            ticket_count = len(resolved_tickets)
+            resolved_tickets.clear()
+        
+        print(f"[RESET] Cleared {count} active drain(s) and {ticket_count} resolved ticket(s)")
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Cleared {count} active drain(s) and {ticket_count} resolved ticket(s)',
+            'drains_cleared': count,
+            'tickets_cleared': ticket_count
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 
 # Helper to get NVIDIA API key from environment
