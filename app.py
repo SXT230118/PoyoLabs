@@ -1984,7 +1984,7 @@ def debug_ticket_matching(ticket_id):
     """Debug endpoint to inspect ticket matching details for a specific ticket."""
     try:
         # Fetch tickets
-        tickets_raw = _fetch_with_timeout('/api/Tickets', timeout=5)
+        tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets', timeout=5)
         if tickets_raw is None:
             return jsonify({'error': 'Could not fetch tickets'}), 500
         
@@ -2002,7 +2002,7 @@ def debug_ticket_matching(ticket_id):
             return jsonify({'error': f'Ticket {ticket_id} not found'}), 404
         
         # Fetch data
-        data_raw = _fetch_with_timeout('/api/Data', timeout=10)
+        data_raw = safe_get(EOG_API_BASE_URL + '/api/Data', timeout=10)
         if data_raw is None:
             return jsonify({'error': 'Could not fetch historical data'}), 500
         
@@ -2212,38 +2212,61 @@ def tickets_match():
     for cid, series in series_map.items():
         static = get_static(cid)
         fill_rate = static.get('fill_rate_per_min', 0) if static else 0
-        # iterate and group consecutive decreases into events
+        
+        # More robust drain detection: look for net decrease over time windows
+        # This handles cases where fill_rate causes small increases during draining
         i = 0
         n = len(series)
         while i < n-1:
             t0, v0 = series[i]
             j = i+1
-            # look for decrease
+            
+            # Start of potential drain: level decreased
             if series[j][1] < v0:
                 start_t = t0
                 start_v = v0
                 end_t = series[j][0]
                 end_v = series[j][1]
                 j += 1
-                while j < n and series[j][1] < series[j-1][1]:
-                    end_t = series[j][0]
-                    end_v = series[j][1]
-                    j += 1
+                
+                # Continue drain event even if there are small increases (fill_rate)
+                # But stop if level goes back above start or stays flat for too long
+                consecutive_increases = 0
+                while j < n:
+                    prev_v = series[j-1][1]
+                    curr_v = series[j][1]
+                    
+                    # If still decreasing overall, continue
+                    if curr_v < start_v:
+                        end_t = series[j][0]
+                        end_v = curr_v
+                        consecutive_increases = 0
+                        j += 1
+                    # Allow up to 2 consecutive small increases (fill_rate compensation)
+                    elif curr_v > prev_v and consecutive_increases < 2:
+                        consecutive_increases += 1
+                        j += 1
+                    else:
+                        # Drain has ended
+                        break
 
                 duration_min = (end_t - start_t).total_seconds() / 60.0
                 drained = max(0.0, start_v - end_v)
-                # account for potion generated during drain
-                drained_adjusted = drained + (fill_rate * duration_min)
+                
+                # Only record as drain if significant (>1L drained) to filter extreme noise
+                if drained > 1:
+                    # account for potion generated during drain
+                    drained_adjusted = drained + (fill_rate * duration_min)
 
-                day_key = start_t.date().isoformat()
-                drains_by_cauldron_day.setdefault(cid, {}).setdefault(day_key, []).append({
-                    'start': start_t.isoformat(),
-                    'end': end_t.isoformat(),
-                    'start_v': start_v,
-                    'end_v': end_v,
-                    'duration_min': round(duration_min, 1),
-                    'drained': round(drained_adjusted, 2)
-                })
+                    day_key = start_t.date().isoformat()
+                    drains_by_cauldron_day.setdefault(cid, {}).setdefault(day_key, []).append({
+                        'start': start_t.isoformat(),
+                        'end': end_t.isoformat(),
+                        'start_v': start_v,
+                        'end_v': end_v,
+                        'duration_min': round(duration_min, 1),
+                        'drained': round(drained_adjusted, 2)
+                    })
                 i = j
             else:
                 i += 1
@@ -2323,15 +2346,26 @@ def tickets_match():
         reason = ''
         if amount is not None and calculated is not None:
             diff = round(amount - calculated, 2)
-            # More lenient threshold: 10L or >20% difference
-            if abs(diff) > 10 and abs(diff) > 0.2 * max(1.0, amount):
+            # Very lenient threshold: 20L AND >30% difference (both conditions must be true)
+            if abs(diff) > 20 and abs(diff) > 0.3 * max(1.0, amount):
                 suspicious = True
-                reason = f'Difference {diff}L exceeds threshold (>10L and >20%).'
+                reason = f'Difference {diff}L exceeds threshold (>20L and >30%).'
+            else:
+                reason = f'Match OK (diff: {diff}L)'
         elif amount is not None and calculated is None:
-            # No drain event found - this is suspicious
-            suspicious = True
-            reason = 'No matching drain event found in historical data.'
+            # No drain event found - only suspicious if it's a large amount
+            if amount > 50:  # Only flag as suspicious if ticket is >50L
+                suspicious = True
+                reason = f'No matching drain event found for {amount}L ticket.'
+            else:
+                suspicious = False  # Small tickets without drains are OK
+                reason = f'Small ticket ({amount}L), no drain found (likely noise).'
+        elif amount is None:
+            # Ticket has no amount - can't validate but not suspicious
+            suspicious = False
+            reason = 'Ticket has no amount data.'
         else:
+            suspicious = False
             reason = 'Insufficient data to compute match.'
 
         # Log a concise summary to help debugging in judge runs
