@@ -3,13 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PoyoLabs - CauldronWatch</title>
-    <link rel="icon" type="image/png" href="/static/potion.ico" size="32x32">
+    <title>Poyolabs - CauldronWatch</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
+        
+        /* Local/demo font: Longalberica - expects the file at /static/assets/Longalberica-DEMO.ttf */
+        @font-face {
+            font-family: 'Longalberica';
+            src: url('/static/assets/Longalberica-DEMO.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+        
         /* Basic styles to make it look good for a hackathon */
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #1a1a2e;
+            background: url('/static/background.gif') center/cover fixed;
             color: #e0e0e0;
             margin: 0;
             padding: 20px;
@@ -28,8 +38,14 @@
             }
         }
         h1 {
+            font-family: 'MedievalSharp', cursive;
             color: #f7b733; /* Potion gold */
             text-align: center;
+            background: rgb(41, 23, 40, 0.85);
+            padding: 20px;
+            border-radius: 0;
+            display: inline-block;
+            margin: 20px auto;
         }
         
         /* ========== NEW: User profile section ========== */
@@ -37,13 +53,13 @@
             position: fixed;
             top: 10px;
             right: 20px;
-            background: rgba(42, 42, 78, 0.9);
+            background: rgb(41, 23, 40, 0.9);
             padding: 10px 15px;
-            border-radius: 8px;
+            border-radius: 0;
             display: flex;
             align-items: center;
             gap: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 10px rgb(35, 20, 34, 0.3);
             z-index: 1000;
         }
 
@@ -64,7 +80,7 @@
             color: #fff;
             border: none;
             padding: 5px 12px;
-            border-radius: 4px;
+            border-radius: 0;
             cursor: pointer;
             font-size: 0.85rem;
             transition: background 0.3s;
@@ -81,14 +97,36 @@
             gap: 20px;
         }
         .dashboard, .agent-panel {
-            background: #2a2a4e;
-            border-radius: 8px;
+            background: rgb(41, 23, 40);
+            border-radius: 0;
             padding: 20px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 15px rgb(35, 20, 34);
         }
         h2 {
+            font-family: 'MedievalSharp', cursive;
             border-bottom: 2px solid #f7b733;
             padding-bottom: 5px;
+            text-align: center;
+        }
+        h3 {
+            font-family: 'MedievalSharp', cursive;
+            text-align: center;
+        }
+
+        /* Cauldron fullness GIF styles */
+        .cauldron-gif-container {
+            margin-top: 6px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .cauldron-gif {
+            width: 100%;
+            max-width: 140px;
+            height: auto;
+            display: block;
+            image-rendering: auto;
+            border-radius: 0;
         }
         
         /* Cauldron Styles */
@@ -100,7 +138,7 @@
         .cauldron {
             background: #3a3a6e;
             padding: 10px;
-            border-radius: 5px;
+            border-radius: 0;
             text-align: center;
             /* Add transition for smooth border color changes */
             transition: border 0.5s ease;
@@ -116,19 +154,9 @@
         .cauldron.warning-90 { border: 2px solid #f39c12; }
         .cauldron.warning-75 { border: 2px solid #f1c40f; }
 
-        .cauldron-name { font-weight: bold; }
-        .level-bar-container {
-            background: #1a1a2e;
-            border-radius: 5px;
-            height: 20px;
-            overflow: hidden;
-            margin-top: 10px;
-        }
-        .level-bar {
-            height: 100%;
-            background: linear-gradient(90deg, #4facf7, #2ecc71);
-            width: 0%; /* Will be set by JS */
-            transition: width 0.5s ease;
+        .cauldron-name { 
+            font-family: 'Longalberica', serif;
+            font-weight: bold; 
         }
 
         /* Agent Chat Styles */
@@ -137,14 +165,24 @@
             overflow-y: auto;
             background: #1a1a2e;
             padding: 10px;
-            border-radius: 5px;
+            border-radius: 0;
             margin-bottom: 10px;
         }
         #chat-log div {
             margin-bottom: 8px;
         }
-        .chat-user { color: #82aaff; }
-        .chat-agent { color: #c3e88d; }
+        .chat-user { 
+            color: #82aaff;
+            background-color: #3d4968;
+            padding: 5px;
+            border-radius: 0;
+         }
+        .chat-agent { 
+            color: #3d4968;
+            background-color: #c3e88d; 
+            padding: 5px;
+            border-radius: 0;
+        }
         .chat-agent-plan {
             color: #888;
             font-style: italic;
@@ -156,29 +194,49 @@
             width: calc(100% - 10px);
             padding: 8px;
             border: none;
-            border-radius: 5px;
+            border-radius: 0;
             background: #3a3a6e;
             color: #fff;
-        }
-        a, 
-        button, 
-        [role="button"], 
-        input[type="submit"], 
-        input[type="button"] {
-        /* Force the custom cursor here too, overriding the browser's default 'pointer' */
-        cursor: url('/static/cursor.cur'), auto !important;
-        }
-
-        a:hover, 
-        button:hover, 
-        a:active, 
-        button:active {
-        cursor: url('/static/cursor.cur'), auto !important;
         }
         @keyframes pulse {
             0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
             70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
             100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+        }
+        /* Layout toggle buttons */
+        .layout-btn {
+            background: #22293b; 
+            color: #fff; 
+            border-radius: 0; 
+            padding: 8px 14px; 
+            border: 2px solid #2f3a55; 
+            cursor: pointer; 
+            margin-right: 6px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .layout-btn:hover {
+            background: #2f3a55;
+            border-color: #3d4968;
+        }
+        .layout-btn.active { 
+            background: #f7b733; 
+            color: #111; 
+            border-color: #f0c65a;
+            font-weight: 600;
+        }
+        button {
+            background: #5a5f9e;
+            color: #fff;
+            border: none;
+            border-radius: 0;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s ease;
+        }
+        button:hover {
+            background: #6d73b0;
         }
     </style>
 </head>
@@ -192,18 +250,31 @@
     </div>
     <!-- ========== END NEW ========== -->
 
-    <h1>PoyoLabs Factory Monitor</h1>
+    <div style="text-align:center;">
+        <h1>
+            <img src="/static/potion.png" alt="Potion" style="width:48px;height:48px;vertical-align:middle;margin-right:12px;">
+            Poyolabs Factory Monitor
+            <img src="/static/potion.png" alt="Potion" style="width:48px;height:48px;vertical-align:middle;margin-left:12px;">
+        </h1>
+    </div>
 
     <div class="container">
         <div class="dashboard">
-            <h2>CauldronWatch Dashboard</h2>
-            <div style="display:flex;gap:12px;align-items:flex-start">
-                <div style="flex:1">
+            <h2>Cauldron Dashboard</h2>
+            <div style="display:flex;gap:16px;align-items:flex-start">
+                <div style="flex:2;min-width:0">
                     <div id="cauldron-grid"></div>
                 </div>
-                <div style="width:300px">
+                <div style="flex:1;min-width:400px;max-width:550px">
                     <h3>Network Map</h3>
-                    <div id="network-map" style="background:#111229;padding:8px;border-radius:6px;height:300px;overflow:auto"></div>
+                    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+                        <div>
+                            <button id="layout-radial" class="layout-btn active">Radial</button>
+                            <button id="layout-force" class="layout-btn">Force</button>
+                        </div>
+                        <div style="color:#c8d0e0;font-size:13px">Layout:</div>
+                    </div>
+                    <div id="network-map" style="background:#111229;padding:12px;border-radius:0;height:420px;overflow:hidden;position:relative"></div>
                     <h3 style="margin-top:12px">Historic Playback</h3>
                     <div>
                         <label>Date: <input type="date" id="play-date"></label>
@@ -213,16 +284,18 @@
                     <div style="margin-top:8px">
                         <button id="run-match">Run Ticket Matching</button>
                         <button id="optimize-routes" style="margin-left:8px">Optimize Routes</button>
+                        <button id="reset-drains" style="margin-left:8px;background:#e74c3c;border-color:#c0392b" title="Clear all active drains">Reset Drains</button>
+                        <button id="export-suspicious" style="margin-left:8px;display:none">Export Suspicious</button>
                     </div>
-                    <div id="match-results" style="margin-top:8px;max-height:200px;overflow:auto;background:#0f1220;padding:8px;border-radius:6px;color:#ddd"></div>
+                    <div id="match-results" style="margin-top:8px;max-height:300px;overflow:auto;background:#0f1220;padding:8px;border-radius:0;color:#ddd"></div>
                 </div>
             </div>
         </div>
 
         <div class="agent-panel">
-            <h2>PoyoLabs Agent</h2>
+            <h2>Poyo Pal</h2>
             <div id="chat-log">
-                <div class="chat-agent">Welcome, Manager. I am monitoring the factory. What do you need?</div>
+                <div class="chat-agent">🤖 Welcome, Manager. I am monitoring the factory and will alert you to any issues.</div>
             </div>
             <form id="chat-form">
                 <input type="text" id="chat-input" placeholder="Ask your agent..." autocomplete="off">
@@ -259,6 +332,17 @@
         const chatLog = document.getElementById('chat-log');
         const chatForm = document.getElementById('chat-form');
         const chatInput = document.getElementById('chat-input');
+        
+        // Map a percent full to the appropriate GIF from /static
+        function getCauldronGif(percent) {
+            const p = Math.max(0, Math.min(100, Number(percent || 0)));
+            if (p <= 20) return '/static/ten.gif';
+            if (p <= 40) return '/static/twenty.gif';
+            if (p <= 55) return '/static/fourty.gif';
+            if (p <= 70) return '/static/sixty.gif';
+            if (p <= 85) return '/static/eighty.gif';
+            return '/static/hundred.gif';
+        }
         
         // --- 1. EOG: Render the Cauldron Dashboard ---
         
@@ -303,10 +387,12 @@
                             <div class="cauldron-name">${data.name}</div>
                             <div class="cauldron-percent">${percent.toFixed(1)}% Full</div>
                             <small class="cauldron-volume">(${currentLevel.toFixed(0)}L / ${maxVolume}L)</small>
-                            <div class="level-bar-container">
-                                <div class="level-bar" style="width: ${percent}%"></div>
+                            <div class="cauldron-gif-container">
+                                <img class="cauldron-gif" src="${getCauldronGif(percent)}" alt="Cauldron fullness">
                             </div>
                             <div style="margin-top:8px;font-size:0.9em;color:#ddd">Time to full: <strong class="time-to-fill">—</strong></div>
+                            <div class="discrepancy-badge" style="display:none;margin-top:4px;font-size:0.8em;color:#ff6b6b;font-weight:bold;">⚠ Discrepancy</div>
+                            <div class="drain-status" style="display:none;margin-top:4px;font-size:0.85em;color:#4facf7;font-weight:bold;">🚛 Draining: <span class="drain-percent">0%</span></div>
                         `;
                         cauldronGrid.appendChild(cauldronEl);
                     } else {
@@ -319,13 +405,39 @@
                         } else {
                             cauldronEl.style.border = '';
                         }
-                        // update texts and bar
+                        // update texts and gif
                         const pctEl = cauldronEl.querySelector('.cauldron-percent');
                         const volEl = cauldronEl.querySelector('.cauldron-volume');
-                        const bar = cauldronEl.querySelector('.level-bar');
+                        const gifEl = cauldronEl.querySelector('.cauldron-gif');
                         if (pctEl) pctEl.textContent = `${percent.toFixed(1)}% Full`;
                         if (volEl) volEl.textContent = `(${currentLevel.toFixed(0)}L / ${maxVolume}L)`;
-                        if (bar) bar.style.width = `${percent}%`;
+                        if (gifEl) {
+                            const newSrc = getCauldronGif(percent);
+                            if (gifEl.getAttribute('src') !== newSrc) gifEl.setAttribute('src', newSrc);
+                        }
+                        
+                        // show discrepancy badge if marked
+                        const badge = cauldronEl.querySelector('.discrepancy-badge');
+                        if (badge && data.has_discrepancy) {
+                            badge.style.display = 'block';
+                        } else if (badge) {
+                            badge.style.display = 'none';
+                        }
+                        
+                        // show drain status if actively draining
+                        const drainStatus = cauldronEl.querySelector('.drain-status');
+                        const drainPercent = cauldronEl.querySelector('.drain-percent');
+                        if (data.is_draining) {
+                            if (drainStatus) drainStatus.style.display = 'block';
+                            if (drainPercent) drainPercent.textContent = `${data.drain_progress}%`;
+                            // Add blue glow to draining cauldrons
+                            cauldronEl.style.boxShadow = '0 0 15px rgba(79, 172, 247, 0.6)';
+                            // Blue glow is handled on container; gif does not change color
+                        } else {
+                            if (drainStatus) drainStatus.style.display = 'none';
+                            cauldronEl.style.boxShadow = '';
+                            // nothing to reset for gif
+                        }
                     }
 
                     // initialize or update per-cauldron state but avoid resetting fullAt unless meaningful change
@@ -334,28 +446,26 @@
                     if (serverFullAt) {
                         const nowAdj = Date.now() + (window._serverClockOffsetMs || 0);
                         if (!prev.fullAt) {
-                            // first time seeing this cauldron
+                            // first time seeing this cauldron - set and lock it
                             prev.fullAt = serverFullAt;
                             prev.initialTotalSeconds = Math.max(1, Math.round((prev.fullAt - nowAdj)/1000));
                             prev.startPercent = percent;
                             prev.currentPercent = percent;
                         } else {
                             const delta = serverFullAt - prev.fullAt;
-                            if (delta <= -2000) {
-                                // significant decrease: accept immediately
+                            // ONLY update fullAt if there's a MAJOR change indicating a real event
+                            // (like a drain starting, or cauldron being refilled)
+                            // Check if percent changed significantly (>5%) - indicates real change
+                            const percentDelta = Math.abs(percent - (prev.currentPercent || percent));
+                            
+                            if (percentDelta > 5) {
+                                // Significant level change detected - accept new fullAt
                                 prev.fullAt = serverFullAt;
                                 prev.initialTotalSeconds = Math.max(1, Math.round((prev.fullAt - nowAdj)/1000));
                                 prev.startPercent = percent;
                                 prev.currentPercent = percent;
-                            } else if (delta > 0) {
-                                // increase: allow only a small step to avoid jumping backwards
-                                const maxIncreaseMs = 5000; // allow up to 5s increase per poll
-                                const allowed = Math.min(delta, maxIncreaseMs);
-                                prev.fullAt = prev.fullAt + allowed;
-                                prev.initialTotalSeconds = Math.max(1, Math.round((prev.fullAt - nowAdj)/1000));
-                                // keep continuity by using currentPercent as starting point
-                                prev.startPercent = prev.currentPercent || percent;
                             }
+                            // Otherwise, ignore server fullAt changes - let client countdown run smoothly
                         }
                     }
                     prev.percentPerSec = percentPerSec;
@@ -390,9 +500,12 @@
                     if (s.percentPerSec && s.initialTotalSeconds) {
                         const elapsed = Math.max(0, s.initialTotalSeconds - remaining);
                         const newPercent = Math.min(100, (s.startPercent || 0) + (s.percentPerSec * elapsed));
-                        const bar = el.querySelector('.level-bar');
+                        const gifEl = el.querySelector('.cauldron-gif');
                         const pctEl = el.querySelector('.cauldron-percent');
-                        if (bar) bar.style.width = `${newPercent}%`;
+                        if (gifEl) {
+                            const newSrc = getCauldronGif(newPercent);
+                            if (gifEl.getAttribute('src') !== newSrc) gifEl.setAttribute('src', newSrc);
+                        }
                         if (pctEl) pctEl.textContent = `${newPercent.toFixed(1)}% Full`;
                         s.currentPercent = newPercent;
                     }
@@ -448,7 +561,7 @@
             const messageEl = document.createElement('div');
             if (sender === 'user') {
                 messageEl.className = 'chat-user';
-                messageEl.textContent = `> ${message}`;
+                messageEl.textContent = `👩‍💻 ${message}`;
             } else if (sender === 'agent') {
                 messageEl.className = 'chat-agent';
                 messageEl.textContent = `🤖 ${message}`;
@@ -465,211 +578,221 @@
         // Historic playback state
         let playbackTimer = null;
 
-        // Fetch network map and render a simple SVG
+        // layout control
+        // Fetch network map and render radial SVG
         async function loadNetwork() {
             try {
-                const res = await fetch('/api/network');
-                const data = await res.json();
+                const [resNet, resStatus] = await Promise.all([fetch('/api/network'), fetch('/api/cauldron/status')]);
+                const data = await (resNet.ok ? resNet.json() : {});
+                const statusList = resStatus.ok ? await resStatus.json() : [];
                 const mapEl = document.getElementById('network-map');
                 mapEl.innerHTML = '';
-                // Simple rendering: show cauldrons with coordinates if available
+
+                // Force a layout calculation and use actual dimensions
+                const rect = mapEl.getBoundingClientRect();
+                const w = rect.width > 0 ? Math.floor(rect.width) - 24 : 500; // subtract padding
+                const h = rect.height > 0 ? Math.floor(rect.height) - 24 : 396; // subtract padding
+
+                await renderRadialNetwork(mapEl, data, statusList, w, h);
+            } catch (e) {
+                console.error('Could not load network', e);
+            }
+        }
+
+        // Render radial layout (market in center, clients around)
+        async function renderRadialNetwork(mapEl, data, statusList, w, h){
+            try{
                 const svgNS = 'http://www.w3.org/2000/svg';
                 const svg = document.createElementNS(svgNS, 'svg');
-                // Size the svg to the container so coordinates scale correctly
-                const w = mapEl.clientWidth || 320;
-                const h = mapEl.clientHeight || 280;
                 svg.setAttribute('width', w);
                 svg.setAttribute('height', h);
                 svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
                 svg.style.background = 'transparent';
+                svg.style.cursor = 'grab';
 
-                const cauldrons = data.cauldrons || [];
-                // Map lat/lon to box (with robust fallbacks)
-                let minLat=90, maxLat=-90, minLon=180, maxLon=-180;
-                cauldrons.forEach(c => {
-                    const lat = Number(c.lat);
-                    const lon = Number(c.lon);
-                    if (!Number.isNaN(lat)) { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); }
-                    if (!Number.isNaN(lon)) { minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon); }
+                // Add zoom/pan support
+                let scale = 1;
+                let translateX = 0;
+                let translateY = 0;
+                let isDragging = false;
+                let startX = 0;
+                let startY = 0;
+
+                const container = document.createElementNS(svgNS, 'g');
+                svg.appendChild(container);
+
+                svg.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                    scale *= delta;
+                    scale = Math.max(0.5, Math.min(3, scale)); // Limit zoom range
+                    container.setAttribute('transform', `translate(${translateX},${translateY}) scale(${scale})`);
                 });
-                // If no valid coordinates found, center everything
-                if (minLat === 90 || maxLat === -90) { minLat = 0; maxLat = 1; }
-                if (minLon === 180 || maxLon === -180) { minLon = 0; maxLon = 1; }
 
-                const margin = 12;
-                const innerW = Math.max(32, w - margin*2);
-                const innerH = Math.max(32, h - margin*2);
+                svg.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    startX = e.clientX - translateX;
+                    startY = e.clientY - translateY;
+                    svg.style.cursor = 'grabbing';
+                });
 
-                // Keep a small map of used positions to apply jitter to overlapping nodes
-                const used = {};
-                const positions = {}; // id -> {x,y,el}
+                svg.addEventListener('mousemove', (e) => {
+                    if (!isDragging) return;
+                    translateX = e.clientX - startX;
+                    translateY = e.clientY - startY;
+                    container.setAttribute('transform', `translate(${translateX},${translateY}) scale(${scale})`);
+                });
 
-                cauldrons.forEach((c, idx) => {
-                    const lat = Number(c.lat);
-                    const lon = Number(c.lon);
-                    // Fallback to center if this cauldron lacks coords
-                    const lonVal = Number.isNaN(lon) ? (minLon + maxLon) / 2 : lon;
-                    const latVal = Number.isNaN(lat) ? (minLat + maxLat) / 2 : lat;
+                svg.addEventListener('mouseup', () => {
+                    isDragging = false;
+                    svg.style.cursor = 'grab';
+                });
 
-                    const xRaw = ((lonVal - minLon) / (maxLon - minLon || 1)) * innerW + margin;
-                    const yRaw = ((maxLat - latVal) / (maxLat - minLat || 1)) * innerH + margin;
-                    // Round positions and apply tiny jitter if colliding
-                    let x = Math.round(xRaw);
-                    let y = Math.round(yRaw);
-                    const key = `${x},${y}`;
-                    if (used[key]) {
-                        // apply small deterministic jitter based on index
-                        const jitter = ((idx % 6) - 3) * 4;
-                        x += jitter;
-                        y += Math.floor(jitter/2);
+                svg.addEventListener('mouseleave', () => {
+                    isDragging = false;
+                    svg.style.cursor = 'grab';
+                });
+
+                const cauldrons = (data && data.cauldrons) || [];
+                const edges = (data && (data.edges || (data.network && data.network.edges))) || [];
+                const market = (data && data.market) || { id: 'M', name: 'Market' };
+                const cx = w/2, cy = h/2;
+
+                // build fast lookup of travel times from market to client
+                const travelMap = {};
+                edges.forEach(e=>{
+                    const from = e.from || e.src || e.u || e.a;
+                    const to = e.to || e.dst || e.v || e.b;
+                    const t = e.travel_time_minutes || e.travel_time || e.cost || e.time || null;
+                    if (!from || !to) return;
+                    travelMap[`${from}|${to}`] = t;
+                    travelMap[`${to}|${from}`] = t;
+                });
+
+                // choose client nodes (exclude market id if present)
+                const clients = cauldrons.filter(c=> String(c.id) !== String(market.id));
+                const count = Math.max(1, clients.length);
+                
+                // Calculate base radius with MORE spacing - increase from 0.65 to 0.75
+                const maxRadius = Math.min(w, h) / 2 - 100; // 100px total padding
+                const baseRadius = maxRadius * 0.75; // Increased from 0.65 to give more space
+
+                const positions = {};
+                clients.forEach((c, idx)=>{
+                    const angle = (idx / count) * 2 * Math.PI - Math.PI/2;  // Start from top
+                    // Reduce travel time variation to keep nodes from overlapping
+                    const t = travelMap[`${market.id}|${c.id}`] || travelMap[`${c.id}|${market.id}`];
+                    const radiusVariation = t != null ? Math.min(20, Number(t) * 1.0) : 0; // Reduced from 30 and 1.5
+                    const dist = baseRadius + radiusVariation;
+                    const x = cx + Math.cos(angle) * dist;
+                    const y = cy + Math.sin(angle) * dist;
+
+                    // draw edge
+                    const line = document.createElementNS(svgNS,'line');
+                    line.setAttribute('x1', x); line.setAttribute('y1', y); 
+                    line.setAttribute('x2', cx); line.setAttribute('y2', cy);
+                    line.setAttribute('stroke', '#ff6f6f'); 
+                    line.setAttribute('stroke-width', '2'); 
+                    line.setAttribute('opacity', '0.6');
+                    container.appendChild(line);
+
+                    // distance label with better positioning
+                    if (t != null) {
+                        const mx = (x + cx)/2; 
+                        const my = (y + cy)/2;
+                        const labelBg = document.createElementNS(svgNS,'rect');
+                        labelBg.setAttribute('x', mx - 18); 
+                        labelBg.setAttribute('y', my - 9); 
+                        labelBg.setAttribute('width', 36); 
+                        labelBg.setAttribute('height', 18);
+                        labelBg.setAttribute('rx', 3); 
+                        labelBg.setAttribute('ry', 3); 
+                        labelBg.setAttribute('fill', '#1a1d2e'); 
+                        labelBg.setAttribute('stroke', '#ff6f6f'); 
+                        labelBg.setAttribute('stroke-width', '1');
+                        labelBg.setAttribute('opacity', '0.9');
+                        container.appendChild(labelBg);
+                        
+                        const lbl = document.createElementNS(svgNS,'text'); 
+                        lbl.setAttribute('x', mx); 
+                        lbl.setAttribute('y', my + 4); 
+                        lbl.setAttribute('text-anchor', 'middle'); 
+                        lbl.setAttribute('font-size', '11'); 
+                        lbl.setAttribute('font-weight', 'bold');
+                        lbl.setAttribute('fill', '#ff9999');
+                        lbl.textContent = `${t}m`; 
+                        container.appendChild(lbl);
                     }
-                    used[`${x},${y}`] = true;
 
-                    const g = document.createElementNS(svgNS, 'g');
-                    const circle = document.createElementNS(svgNS,'circle');
-                    circle.setAttribute('cx', x);
-                    circle.setAttribute('cy', y);
-                    circle.setAttribute('r', 8);
-                    circle.setAttribute('fill','#4facf7');
-                    circle.setAttribute('stroke','#fff');
-                    circle.setAttribute('stroke-width','0.8');
-                    circle.style.cursor = 'pointer';
-                    g.appendChild(circle);
+                    positions[c.id] = { x, y };
+                });
 
-                    // add a title for hover (accessibility)
-                    const title = document.createElementNS(svgNS, 'title');
-                    title.textContent = `${c.name || c.id} (${c.id || ''})`;
+                // draw client nodes on top
+                clients.forEach(c => {
+                    const pos = positions[c.id];
+                    const g = document.createElementNS(svgNS,'g'); 
+                    g.setAttribute('transform', `translate(${pos.x},${pos.y})`);
+                    
+                    const circ = document.createElementNS(svgNS,'circle'); 
+                    circ.setAttribute('r', '16'); 
+                    circ.setAttribute('fill', '#6d5bd3'); 
+                    circ.setAttribute('stroke', '#fff'); 
+                    circ.setAttribute('stroke-width', '2'); 
+                    g.appendChild(circ);
+                    
+                    const text = document.createElementNS(svgNS,'text'); 
+                    text.setAttribute('y', '5'); 
+                    text.setAttribute('fill', '#fff'); 
+                    text.setAttribute('font-size', '11'); 
+                    text.setAttribute('font-weight', 'bold');
+                    text.setAttribute('text-anchor', 'middle'); 
+                    
+                    // Shorten name if too long
+                    const name = c.name || c.id;
+                    const displayName = name.length > 8 ? name.substring(0, 7) + '…' : name;
+                    text.textContent = displayName;
+                    g.appendChild(text);
+                    
+                    const title = document.createElementNS(svgNS,'title');
+                    title.textContent = `${c.name || c.id} (${c.id})`;
                     g.appendChild(title);
-
-                    const label = document.createElementNS(svgNS,'text');
-                    // clamp label position to avoid overflow
-                    const labelX = Math.min(x + 12, w - 60);
-                    const labelY = Math.min(y + 4, h - 6);
-                    label.setAttribute('x', labelX);
-                    label.setAttribute('y', labelY);
-                    label.setAttribute('fill','#ddd');
-                    label.setAttribute('font-size','11');
-                    label.textContent = c.name || c.id;
-                    g.appendChild(label);
-
-                    svg.appendChild(g);
-
-                    // store position for edge drawing and coloring
-                    positions[c.id] = { x: x, y: y, el: g };
+                    
+                    container.appendChild(g);
+                    positions[c.id].el = g;
                 });
 
-                // Draw edges (if present) beneath nodes
-                const edges = data.edges || (data.network && data.network.edges) || [];
-                if (Array.isArray(edges) && edges.length>0) {
-                    const edgeGroup = document.createElementNS(svgNS, 'g');
-                    edgeGroup.setAttribute('class','edges');
-                    edges.forEach(e => {
-                        const fromId = e.from || e.src || e.u || e.a;
-                        const toId = e.to || e.dst || e.v || e.b;
-                        if (!fromId || !toId) return;
-                        const p1 = positions[fromId];
-                        const p2 = positions[toId];
-                        if (!p1 || !p2) return;
-                        const line = document.createElementNS(svgNS, 'line');
-                        line.setAttribute('x1', p1.x);
-                        line.setAttribute('y1', p1.y);
-                        line.setAttribute('x2', p2.x);
-                        line.setAttribute('y2', p2.y);
-                        line.setAttribute('stroke', '#55607a');
-                        // scale stroke by travel time where possible
-                        const rawT = e.travel_time_minutes || e.travel_time || e.cost || e.time || 1;
-                        const tnum = Number(rawT) || 1;
-                        const strokeW = Math.max(1, Math.min(6, Math.round(tnum / 2)));
-                        line.setAttribute('stroke-width', String(strokeW));
-                        line.setAttribute('opacity', '0.9');
-                        // attach tooltip
-                        const etitle = document.createElementNS(svgNS, 'title');
-                        etitle.textContent = `from ${fromId} → ${toId}` + (rawT ? ` (${rawT} min)` : '');
-                        line.appendChild(etitle);
-                        edgeGroup.appendChild(line);
+                // draw market center (larger, more prominent)
+                const mg = document.createElementNS(svgNS,'g'); 
+                mg.setAttribute('transform', `translate(${cx},${cy})`);
+                
+                const mCirc = document.createElementNS(svgNS,'circle'); 
+                mCirc.setAttribute('r', '36'); 
+                mCirc.setAttribute('fill', '#f7b733'); 
+                mCirc.setAttribute('stroke', '#fff'); 
+                mCirc.setAttribute('stroke-width', '3'); 
+                mg.appendChild(mCirc);
+                
+                const mtxt = document.createElementNS(svgNS,'text'); 
+                mtxt.setAttribute('y', '6'); 
+                mtxt.setAttribute('text-anchor', 'middle'); 
+                mtxt.setAttribute('fill', '#111'); 
+                mtxt.setAttribute('font-size', '16'); 
+                mtxt.setAttribute('font-weight', 'bold');
+                mtxt.textContent = market.name || market.id || 'Market'; 
+                mg.appendChild(mtxt);
+                
+                container.appendChild(mg);
 
-                        const tt = e.travel_time_minutes || e.travel_time || e.cost || e.time || null;
-                        if (tt != null) {
-                            const lx = (p1.x + p2.x)/2;
-                            const ly = (p1.y + p2.y)/2;
-                            const tlabel = document.createElementNS(svgNS, 'text');
-                            tlabel.setAttribute('x', lx);
-                            tlabel.setAttribute('y', ly - 6);
-                            tlabel.setAttribute('fill', '#aab');
-                            tlabel.setAttribute('font-size', '10');
-                            tlabel.setAttribute('text-anchor','middle');
-                            tlabel.textContent = String(tt);
-                            edgeGroup.appendChild(tlabel);
-                        }
-                    });
-                    svg.insertBefore(edgeGroup, svg.firstChild);
-                }
-
-                // color nodes by current fill percent using /api/cauldron/status
-                try {
-                    const statusRes = await fetch('/api/cauldron/status');
-                    const statusList = await statusRes.json();
-                    const statusMap = {};
-                    if (Array.isArray(statusList)) {
-                        statusList.forEach(s => { statusMap[s.id] = Number(s.percent_full || ((s.current_level||0)/(s.max_volume||1))*100); });
-                    }
-
-                    function percentToColor(p) {
-                        p = Math.max(0, Math.min(100, p));
-                        if (p <= 75) {
-                            const t = p/75;
-                            const r = Math.round(76 + (241-76)*t);
-                            const g = Math.round(175 + (196-175)*t);
-                            const b = Math.round(247 + (15-247)*t);
-                            return `rgb(${r},${g},${b})`;
-                        } else {
-                            const t = (p-75)/25;
-                            const r = Math.round(241 + (231-241)*t);
-                            const g = Math.round(196 + (76-196)*t);
-                            const b = Math.round(15 + (60-15)*t);
-                            return `rgb(${r},${g},${b})`;
-                        }
-                    }
-
-                    Object.keys(positions).forEach(id => {
-                        const pos = positions[id];
-                        const pct = statusMap[id];
-                        const circle = pos && pos.el && pos.el.querySelector('circle');
-                        if (circle) {
-                            if (typeof pct === 'number') {
-                                circle.setAttribute('fill', percentToColor(pct));
-                            } else {
-                                circle.setAttribute('fill', '#4facf7');
-                            }
-                        }
-                        // attach hover tooltip details for nodes
-                        try {
-                            const nodeTitle = pos.el.querySelector('title');
-                            const details = [];
-                            const pctTxt = typeof pct === 'number' ? `${pct.toFixed(1)}%` : 'N/A';
-                            details.push(`Fill: ${pctTxt}`);
-                            const s = statusList && statusList.find(x=>x.id===id);
-                            if (s) {
-                                if (s.fill_rate_per_min) details.push(`Fill rate: ${s.fill_rate_per_min} L/min`);
-                                if (s.drain_rate_per_min) details.push(`Drain rate: ${s.drain_rate_per_min} L/min`);
-                                if (s.time_to_full_seconds != null) details.push(`TtF: ${Math.round(Number(s.time_to_full_seconds))}s`);
-                            }
-                            if (nodeTitle) nodeTitle.textContent = `${nodeTitle.textContent}\n${details.join(' | ')}`;
-                        } catch (e) {
-                            // ignore
-                        }
-                    });
-                } catch (err) {
-                    console.warn('Could not fetch cauldron status for coloring:', err);
-                }
+                // color nodes by status
+                const statusMap = {};
+                if (Array.isArray(statusList)) statusList.forEach(s=>{ statusMap[s.id]=Number(s.percent_full||((s.current_level||0)/(s.max_volume||1))*100); });
+                function percentToColor(p){ p=Math.max(0,Math.min(100,p)); if(p<=75){ const t=p/75; const r=Math.round(76+(241-76)*t); const g=Math.round(175+(196-175)*t); const b=Math.round(247+(15-247)*t); return `rgb(${r},${g},${b})`; } else { const t=(p-75)/25; const r=Math.round(241+(231-241)*t); const g=Math.round(196+(76-196)*t); const b=Math.round(15+(60-15)*t); return `rgb(${r},${g},${b})`; } }
+                Object.keys(positions).forEach(id=>{ const p=positions[id]; const pct = statusMap[id]; const circ = p.el.querySelector('circle'); if(circ){ circ.setAttribute('fill', typeof pct==='number' ? percentToColor(pct) : '#6d5bd3'); } const title = p.el.querySelector('title'); if(title){ title.textContent = `${id} — ${pct!=null?pct.toFixed(1)+'%':'N/A'}`; } });
 
                 mapEl.appendChild(svg);
-                // store current svg for route drawing
                 window._networkSvg = svg;
                 window._networkPositions = positions;
-            } catch (e) {
-                console.error('Could not load network', e);
-            }
+            }catch(e){ console.error('radial render failed', e); }
         }
 
         // --- Greedy route optimizer (client-side prototype) ---
@@ -755,77 +878,127 @@
         }
 
         async function playHistoric(dateStr) {
-            if (!dateStr) return;
-            // fetch the full day's historic samples
-            const res = await fetch(`/api/data/historic?start=${dateStr}&end=${dateStr}`);
-            const samples = await res.json();
-            if (!Array.isArray(samples) || samples.length===0) {
-                alert('No historic data for that date.');
+            if (!dateStr) {
+                alert('Please select a date first.');
                 return;
             }
+            
+            console.log('Fetching historic data for:', dateStr);
+            
+            try {
+                // fetch the full day's historic samples
+                const res = await fetch(`/api/data/historic?start=${dateStr}&end=${dateStr}`);
+                
+                if (!res.ok) {
+                    alert(`Error fetching data: ${res.status} ${res.statusText}`);
+                    return;
+                }
+                
+                const samples = await res.json();
+                console.log('Received samples:', samples.length);
+                
+                if (!Array.isArray(samples) || samples.length === 0) {
+                    alert('No historic data for that date.');
+                    return;
+                }
+                
+                // Get the cauldron grid element
+                const cauldronGrid = document.getElementById('cauldron-grid');
+                if (!cauldronGrid) {
+                    console.error('Cauldron grid not found!');
+                    alert('Error: Cauldron grid not found');
+                    return;
+                }
 
-            // Normalize: if records are full objects with cauldron_levels, we'll step through them
-            let i = 0;
-            if (playbackTimer) clearInterval(playbackTimer);
-            playbackTimer = setInterval(() => {
-                const rec = samples[i];
-                // if record has cauldron_levels, replace the grid with snapshot
-                if (rec.cauldron_levels) {
-                    // build temporary snapshot objects similar to /api/cauldron/status
-                    const snapshot = [];
-                    const staticCauldrons = window.staticCauldrons || [];
-                    for (const sc of staticCauldrons) {
-                        const id = sc.id;
-                        snapshot.push({
-                            id: id,
-                            name: sc.name,
-                            current_level: rec.cauldron_levels[id] || 0,
-                            max_volume: sc.max_volume || 1,
-                            anomaly: (rec.cauldron_levels[id] || 0) >= (sc.max_volume || 1),
-                            percent_full: ((rec.cauldron_levels[id] || 0) / (sc.max_volume || 1)) * 100
-                        });
-                    }
-                    // render snapshot into grid using in-place updates (avoid clearing DOM)
-                    for (const data of snapshot) {
-                        const id = data.id;
-                        let cauldronEl = cauldronGrid.querySelector(`.cauldron[data-id="${id}"]`);
-                        if (!cauldronEl) {
-                            cauldronEl = document.createElement('div');
-                            cauldronEl.classList.add('cauldron');
-                            cauldronEl.setAttribute('data-id', id);
-                            cauldronEl.innerHTML = `
-                                <div class="cauldron-name">${data.name}</div>
-                                <div class="cauldron-percent">${data.percent_full.toFixed(1)}% Full</div>
-                                <small class="cauldron-volume">(${(data.current_level||0).toFixed(0)}L / ${data.max_volume}L)</small>
-                                <div class="level-bar-container"><div class="level-bar" style="width:${data.percent_full}%"></div></div>
-                                <div style="margin-top:8px;font-size:0.9em;color:#ddd">Time to full: <strong class="time-to-fill">—</strong></div>
-                            `;
-                            cauldronGrid.appendChild(cauldronEl);
-                        } else {
-                            // update existing element
-                            if (data.anomaly) cauldronEl.classList.add('anomaly'); else cauldronEl.classList.remove('anomaly');
-                            const pctEl = cauldronEl.querySelector('.cauldron-percent');
-                            const volEl = cauldronEl.querySelector('.cauldron-volume');
-                            const bar = cauldronEl.querySelector('.level-bar');
-                            if (pctEl) pctEl.textContent = `${data.percent_full.toFixed(1)}% Full`;
-                            if (volEl) volEl.textContent = `(${(data.current_level||0).toFixed(0)}L / ${data.max_volume}L)`;
-                            if (bar) bar.style.width = `${data.percent_full}%`;
+                // Show playback indicator
+                const playIndicator = document.createElement('div');
+                playIndicator.id = 'playback-indicator';
+                playIndicator.style.cssText = 'position:fixed;top:10px;right:10px;background:#4facf7;color:#fff;padding:8px 16px;border-radius:0;z-index:1000;font-weight:bold;';
+                playIndicator.textContent = `▶ Playing ${dateStr} (0/${samples.length})`;
+                document.body.appendChild(playIndicator);
+
+                // Normalize: if records are full objects with cauldron_levels, we'll step through them
+                let i = 0;
+                if (playbackTimer) clearInterval(playbackTimer);
+                
+                playbackTimer = setInterval(() => {
+                    const rec = samples[i];
+                    
+                    // Update indicator
+                    playIndicator.textContent = `▶ Playing ${dateStr} (${i + 1}/${samples.length})`;
+                    
+                    // if record has cauldron_levels, replace the grid with snapshot
+                    if (rec && rec.cauldron_levels) {
+                        // build temporary snapshot objects similar to /api/cauldron/status
+                        const snapshot = [];
+                        const staticCauldrons = window.staticCauldrons || [];
+                        
+                        for (const sc of staticCauldrons) {
+                            const id = sc.id;
+                            snapshot.push({
+                                id: id,
+                                name: sc.name,
+                                current_level: rec.cauldron_levels[id] || 0,
+                                max_volume: sc.max_volume || 1,
+                                anomaly: (rec.cauldron_levels[id] || 0) >= (sc.max_volume || 1),
+                                percent_full: ((rec.cauldron_levels[id] || 0) / (sc.max_volume || 1)) * 100
+                            });
                         }
-                        // ensure playback doesn't show stale fullAt-based timers
-                        const state = window._cauldronState = window._cauldronState || {};
-                        state[id] = state[id] || {};
-                        state[id].fullAt = null;
-                        const el = cauldronGrid.querySelector(`.cauldron[data-id="${id}"]`);
-                        const tEl = el && el.querySelector('.time-to-fill');
-                        if (tEl) tEl.textContent = '—';
+                        
+                        // render snapshot into grid using in-place updates (avoid clearing DOM)
+                        for (const data of snapshot) {
+                            const id = data.id;
+                            let cauldronEl = cauldronGrid.querySelector(`.cauldron[data-id="${id}"]`);
+                            if (!cauldronEl) {
+                                cauldronEl = document.createElement('div');
+                                cauldronEl.classList.add('cauldron');
+                                cauldronEl.setAttribute('data-id', id);
+                                cauldronEl.innerHTML = `
+                                    <div class="cauldron-name">${data.name}</div>
+                                    <div class="cauldron-percent">${data.percent_full.toFixed(1)}% Full</div>
+                                    <small class="cauldron-volume">(${(data.current_level||0).toFixed(0)}L / ${data.max_volume}L)</small>
+                                    <div class="cauldron-gif-container"><img class="cauldron-gif" src="${getCauldronGif(data.percent_full)}" alt="Cauldron fullness"></div>
+                                    <div style="margin-top:8px;font-size:0.9em;color:#ddd">Time to full: <strong class="time-to-fill">—</strong></div>
+                                `;
+                                cauldronGrid.appendChild(cauldronEl);
+                            } else {
+                                // update existing element
+                                if (data.anomaly) cauldronEl.classList.add('anomaly'); else cauldronEl.classList.remove('anomaly');
+                                const pctEl = cauldronEl.querySelector('.cauldron-percent');
+                                const volEl = cauldronEl.querySelector('.cauldron-volume');
+                                const gifEl = cauldronEl.querySelector('.cauldron-gif');
+                                if (pctEl) pctEl.textContent = `${data.percent_full.toFixed(1)}% Full`;
+                                if (volEl) volEl.textContent = `(${(data.current_level||0).toFixed(0)}L / ${data.max_volume}L)`;
+                                if (gifEl) {
+                                    const newSrc = getCauldronGif(data.percent_full);
+                                    if (gifEl.getAttribute('src') !== newSrc) gifEl.setAttribute('src', newSrc);
+                                }
+                            }
+                            // ensure playback doesn't show stale fullAt-based timers
+                            const state = window._cauldronState = window._cauldronState || {};
+                            state[id] = state[id] || {};
+                            state[id].fullAt = null;
+                            const el = cauldronGrid.querySelector(`.cauldron[data-id="${id}"]`);
+                            const tEl = el && el.querySelector('.time-to-fill');
+                            if (tEl) tEl.textContent = '—';
+                        }
                     }
-                }
 
-                i++;
-                if (i >= samples.length) {
-                    clearInterval(playbackTimer); playbackTimer = null;
-                }
-            }, 800);
+                    i++;
+                    if (i >= samples.length) {
+                        clearInterval(playbackTimer);
+                        playbackTimer = null;
+                        playIndicator.textContent = '✓ Playback Complete';
+                        setTimeout(() => {
+                            playIndicator.remove();
+                        }, 2000);
+                    }
+                }, 800);
+                
+            } catch (error) {
+                console.error('Playback error:', error);
+                alert('Playback error: ' + error.message);
+            }
         }
 
         document.getElementById('play-btn').addEventListener('click', () => {
@@ -837,27 +1010,205 @@
         });
 
         document.getElementById('run-match').addEventListener('click', async () => {
-            const res = await fetch('/api/tickets/match');
-            const data = await res.json();
             const out = document.getElementById('match-results');
-            out.innerHTML = '';
-            if (data.error) { out.textContent = data.error; return; }
-            const matches = data.matches || [];
-            matches.forEach(m => {
-                const div = document.createElement('div');
-                div.style.padding = '6px 0';
-                div.style.borderBottom = '1px solid rgba(255,255,255,0.03)';
-                div.innerHTML = `<strong>${m.ticket_id || '(no id)'} (${m.cauldron_id})</strong> — Ticket: ${m.ticket_amount || 'N/A'}L, Calculated: ${m.calculated_amount || 'N/A'}L<br/><span style="color:${m.suspicious? '#ff6b6b':'#9ad18a'}">${m.suspicious? 'SUSPICIOUS':'OK'}</span> — ${m.reason}`;
-                out.appendChild(div);
-            });
-            if ((data.unmatched_drains || []).length>0) {
-                const h = document.createElement('div'); h.style.marginTop='8px'; h.innerHTML = '<strong>Unmatched Drains</strong>';
-                out.appendChild(h);
-                (data.unmatched_drains||[]).forEach(u => {
-                    const d = document.createElement('div'); d.style.fontSize='12px'; d.style.marginTop='4px';
-                    d.textContent = `${u.cauldron_id} ${u.day} drained ${u.event.drained}L (from ${u.event.start} to ${u.event.end})`;
-                    out.appendChild(d);
+            out.innerHTML = '<div style="color:#aaa">Loading...</div>';
+            try {
+                const res = await fetch('/api/tickets/match');
+                const data = await res.json();
+                out.innerHTML = '';
+                if (data.error) { 
+                    out.innerHTML = `<div style="color:#ff6b6b">Error: ${data.error}</div>`; 
+                    return; 
+                }
+                
+                const matches = data.matches || [];
+                const suspicious = matches.filter(m => m.suspicious);
+                const ok = matches.filter(m => !m.suspicious);
+                
+                // Summary header
+                const summary = document.createElement('div');
+                summary.style.padding = '8px';
+                summary.style.background = 'rgba(255,255,255,0.05)';
+                summary.style.borderRadius = '4px';
+                summary.style.marginBottom = '8px';
+                summary.innerHTML = `<strong>Ticket Analysis</strong><br/>
+                    <span style="color:#9ad18a">${ok.length} Valid</span> • 
+                    <span style="color:#ff6b6b">${suspicious.length} Suspicious</span>`;
+                out.appendChild(summary);
+                
+                // Show suspicious first
+                if (suspicious.length > 0) {
+                    const h = document.createElement('div');
+                    h.style.marginTop = '8px';
+                    h.style.fontWeight = 'bold';
+                    h.style.color = '#ff6b6b';
+                    h.textContent = `⚠ ${suspicious.length} Suspicious Tickets`;
+                    out.appendChild(h);
+                    
+                    // Show top 10 suspicious with details, rest collapsed
+                    const topSuspicious = suspicious.slice(0, 10);
+                    const restSuspicious = suspicious.slice(10);
+                    
+                    topSuspicious.forEach(m => {
+                        const div = document.createElement('div');
+                        div.style.padding = '8px';
+                        div.style.margin = '4px 0';
+                        div.style.background = 'rgba(255,107,107,0.1)';
+                        div.style.border = '1px solid rgba(255,107,107,0.3)';
+                        div.style.borderRadius = '4px';
+                        div.style.fontSize = '0.9em';
+                        
+                        const diff = m.difference || 0;
+                        const diffColor = diff > 0 ? '#ff6b6b' : '#ffa726';
+                        const diffText = diff > 0 ? `Over-claimed by ${diff}L` : `Under-claimed by ${Math.abs(diff)}L`;
+                        
+                        div.innerHTML = `
+                            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                                <strong style="color:#fff">${m.cauldron_id}</strong>
+                                <span style="color:#888">Ticket #${m.ticket_id || 'N/A'}</span>
+                            </div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:6px 0">
+                                <div><span style="color:#888">Claimed:</span> <strong>${m.ticket_amount || 'N/A'}L</strong></div>
+                                <div><span style="color:#888">Actual:</span> <strong>${m.calculated_amount || 'N/A'}L</strong></div>
+                            </div>
+                            <div style="color:${diffColor};font-weight:bold;font-size:0.95em;margin-top:4px">${diffText}</div>
+                            <div style="color:#999;font-size:0.85em;margin-top:4px">${m.reason}</div>
+                        `;
+                        out.appendChild(div);
+                    });
+                    
+                    if (restSuspicious.length > 0) {
+                        const moreToggle = document.createElement('div');
+                        moreToggle.style.marginTop = '8px';
+                        moreToggle.style.cursor = 'pointer';
+                        moreToggle.style.color = '#ff9999';
+                        moreToggle.style.fontSize = '0.9em';
+                        moreToggle.innerHTML = `+ ${restSuspicious.length} more suspicious tickets (click to show)`;
+                        
+                        const moreContainer = document.createElement('div');
+                        moreContainer.style.display = 'none';
+                        
+                        restSuspicious.forEach(m => {
+                            const div = document.createElement('div');
+                            div.style.padding = '4px';
+                            div.style.margin = '2px 0';
+                            div.style.background = 'rgba(255,107,107,0.05)';
+                            div.style.borderRadius = '3px';
+                            div.style.fontSize = '0.85em';
+                            div.innerHTML = `${m.cauldron_id} — Ticket: ${m.ticket_amount}L, Actual: ${m.calculated_amount}L, Diff: ${m.difference}L`;
+                            moreContainer.appendChild(div);
+                        });
+                        
+                        moreToggle.addEventListener('click', () => {
+                            if (moreContainer.style.display === 'none') {
+                                moreContainer.style.display = 'block';
+                                moreToggle.innerHTML = `- Hide ${restSuspicious.length} more suspicious tickets`;
+                            } else {
+                                moreContainer.style.display = 'none';
+                                moreToggle.innerHTML = `+ ${restSuspicious.length} more suspicious tickets (click to show)`;
+                            }
+                        });
+                        
+                        out.appendChild(moreToggle);
+                        out.appendChild(moreContainer);
+                    }
+                    
+                    // Show export button
+                    document.getElementById('export-suspicious').style.display = 'inline-block';
+                    document.getElementById('export-suspicious').onclick = () => {
+                        const csv = 'Ticket ID,Cauldron,Claimed (L),Actual (L),Difference (L),Reason\n' +
+                            suspicious.map(m => 
+                                `${m.ticket_id || 'N/A'},${m.cauldron_id},${m.ticket_amount || 'N/A'},${m.calculated_amount || 'N/A'},${m.difference || 'N/A'},"${m.reason}"`
+                            ).join('\n');
+                        const blob = new Blob([csv], { type: 'text/csv' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `suspicious_tickets_${new Date().toISOString().split('T')[0]}.csv`;
+                        a.click();
+                    };
+                }
+                
+                // Show valid tickets (collapsed by default)
+                if (ok.length > 0) {
+                    const toggle = document.createElement('div');
+                    toggle.style.marginTop = '12px';
+                    toggle.style.cursor = 'pointer';
+                    toggle.style.color = '#9ad18a';
+                    toggle.style.fontWeight = 'bold';
+                    toggle.innerHTML = `✓ ${ok.length} Valid Tickets (click to expand)`;
+                    
+                    const validContainer = document.createElement('div');
+                    validContainer.style.display = 'none';
+                    validContainer.style.marginTop = '4px';
+                    
+                    ok.forEach(m => {
+                        const div = document.createElement('div');
+                        div.style.padding = '6px';
+                        div.style.margin = '2px 0';
+                        div.style.fontSize = '0.9em';
+                        div.style.background = 'rgba(154,209,138,0.05)';
+                        div.style.borderRadius = '3px';
+                        div.style.borderLeft = '2px solid #9ad18a';
+                        div.style.paddingLeft = '8px';
+                        const diff = m.difference || 0;
+                        const matchQuality = Math.abs(diff) < 1 ? 'Perfect' : Math.abs(diff) < 3 ? 'Good' : 'Acceptable';
+                        div.innerHTML = `
+                            <div><strong>${m.cauldron_id}</strong> — Ticket #${m.ticket_id || 'N/A'}</div>
+                            <div style="color:#aaa;font-size:0.85em;margin-top:2px">
+                                Claimed: ${m.ticket_amount}L, Actual: ${m.calculated_amount}L, Diff: ${Math.abs(diff).toFixed(2)}L
+                                <span style="color:#9ad18a;margin-left:8px">(${matchQuality})</span>
+                            </div>
+                        `;
+                        validContainer.appendChild(div);
+                    });
+                    
+                    toggle.addEventListener('click', () => {
+                        if (validContainer.style.display === 'none') {
+                            validContainer.style.display = 'block';
+                            toggle.innerHTML = `✓ ${ok.length} Valid Tickets (click to collapse)`;
+                        } else {
+                            validContainer.style.display = 'none';
+                            toggle.innerHTML = `✓ ${ok.length} Valid Tickets (click to expand)`;
+                        }
+                    });
+                    
+                    out.appendChild(toggle);
+                    out.appendChild(validContainer);
+                }
+                
+                // Show unmatched drains
+                if ((data.unmatched_drains || []).length > 0) {
+                    const h = document.createElement('div');
+                    h.style.marginTop = '12px';
+                    h.style.fontWeight = 'bold';
+                    h.style.color = '#f39c12';
+                    h.textContent = '⚠ Unmatched Drain Events';
+                    out.appendChild(h);
+                    
+                    (data.unmatched_drains || []).forEach(u => {
+                        const d = document.createElement('div');
+                        d.style.fontSize = '0.85em';
+                        d.style.marginTop = '4px';
+                        d.style.padding = '4px';
+                        d.style.background = 'rgba(243,156,18,0.1)';
+                        d.style.borderLeft = '3px solid #f39c12';
+                        d.textContent = `${u.cauldron_id} on ${u.day}: ${u.event.drained}L drained (${u.event.duration_min}min)`;
+                        out.appendChild(d);
+                    });
+                }
+                
+                // Mark cauldrons with discrepancies
+                suspicious.forEach(m => {
+                    const el = document.querySelector(`.cauldron[data-id="${m.cauldron_id}"]`);
+                    if (el) {
+                        const badge = el.querySelector('.discrepancy-badge');
+                        if (badge) badge.style.display = 'block';
+                    }
                 });
+                
+            } catch (err) {
+                out.innerHTML = `<div style="color:#ff6b6b">Error: ${err.message}</div>`;
             }
         });
 
@@ -918,14 +1269,44 @@
                     lbl.textContent = `Courier ${r.courier}` + (r.impossible ? ' (!!)' : '');
                     g.appendChild(lbl);
 
-                    svg.appendChild(g);
-
+                    // svg.appendChild(g);
+                    const container = svg.querySelector('g');
+                    if (container) {
+                        container.appendChild(g);
+                    }
+                    else {
+                        svg.appendChild(g);
+                    }
+                    
                     out.innerHTML += `Courier ${r.courier}: ${seq.join(' → ')}${r.impossible ? ' — UNREACHABLE' : ''}<br>`;
                 });
 
             } catch (err) {
                 console.error(err);
                 alert('Optimizer failed: ' + err);
+            }
+        });
+
+        // Reset Drains button handler
+        document.getElementById('reset-drains').addEventListener('click', async () => {
+            if (!confirm('Clear all active drains? This will stop all courier operations.')) {
+                return;
+            }
+            
+            try {
+                const res = await fetch('/api/drains/reset', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    alert(`✅ ${data.message}`);
+                    // Refresh the dashboard to show cleared drains
+                    updateCauldronLevels();
+                } else {
+                    alert(`❌ Error: ${data.error || 'Unknown error'}`);
+                }
+            } catch (err) {
+                console.error('Reset failed:', err);
+                alert('❌ Failed to reset drains: ' + err);
             }
         });
 
@@ -938,6 +1319,100 @@
         
         // Keep the dashboard live-updating (like the EOG spec)
         setInterval(updateCauldronLevels, 5000); // Update every 5 seconds
+        
+        // ========== NEW: Proactive Agent Insights ==========
+        async function fetchProactiveInsights() {
+            try {
+                const res = await fetch('/api/agent/insights');
+                if (!res.ok) return;
+                
+                const data = await res.json();
+                const insights = data.insights || [];
+                
+                if (insights.length === 0) {
+                    // Hide insights panel if no insights
+                    document.getElementById('agent-insights').style.display = 'none';
+                    return;
+                }
+                
+                // Show insights panel
+                const insightsPanel = document.getElementById('agent-insights');
+                const container = document.getElementById('insights-container');
+                insightsPanel.style.display = 'block';
+                
+                // Clear old insights
+                container.innerHTML = '';
+                
+                // Display insights
+                insights.forEach(insight => {
+                    const div = document.createElement('div');
+                    div.style.padding = '6px 8px';
+                    div.style.margin = '4px 0';
+                    div.style.borderRadius = '4px';
+                    div.style.fontSize = '0.9em';
+                    
+                    // Color based on severity
+                    if (insight.severity === 'URGENT' || insight.severity === 'HIGH') {
+                        div.style.background = 'rgba(255,107,107,0.15)';
+                        div.style.borderLeft = '3px solid #ff6b6b';
+                    } else if (insight.severity === 'MEDIUM') {
+                        div.style.background = 'rgba(255,193,7,0.15)';
+                        div.style.borderLeft = '3px solid #ffc107';
+                    } else {
+                        div.style.background = 'rgba(154,209,138,0.15)';
+                        div.style.borderLeft = '3px solid #9ad18a';
+                    }
+                    
+                    div.innerHTML = `
+                        <div style="font-weight:bold;margin-bottom:2px;color:#fff">${insight.type}</div>
+                        <div>${insight.message}</div>
+                    `;
+                    
+                    // Add action button if available
+                    if (insight.action && insight.cauldron) {
+                        const actionBtn = document.createElement('button');
+                        actionBtn.textContent = `Execute: ${insight.action}`;
+                        actionBtn.style.marginTop = '6px';
+                        actionBtn.style.padding = '4px 8px';
+                        actionBtn.style.fontSize = '0.85em';
+                        actionBtn.style.background = '#4facf7';
+                        actionBtn.style.border = 'none';
+                        actionBtn.style.borderRadius = '3px';
+                        actionBtn.style.cursor = 'pointer';
+                        actionBtn.style.color = '#fff';
+                        
+                        actionBtn.addEventListener('click', () => {
+                            // Auto-send command to agent
+                            const chatInput = document.getElementById('chat-input');
+                            chatInput.value = `${insight.action} for ${insight.cauldron}`;
+                            document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+                        });
+                        
+                        div.appendChild(actionBtn);
+                    }
+                    
+                    container.appendChild(div);
+                });
+                
+                // Also add to chat log as agent message
+                if (insights.length > 0 && insights.some(i => i.severity === 'URGENT' || i.severity === 'HIGH')) {
+                    const chatLog = document.getElementById('chat-log');
+                    const urgentCount = insights.filter(i => i.severity === 'URGENT' || i.severity === 'HIGH').length;
+                    const agentMsg = document.createElement('div');
+                    agentMsg.classList.add('chat-agent');
+                    agentMsg.innerHTML = `🚨 <strong>Alert:</strong> I've detected ${urgentCount} urgent ${urgentCount === 1 ? 'issue' : 'issues'} requiring your attention. Check the insights panel above.`;
+                    chatLog.appendChild(agentMsg);
+                    chatLog.scrollTop = chatLog.scrollHeight;
+                }
+                
+            } catch (err) {
+                console.error('Failed to fetch proactive insights:', err);
+            }
+        }
+        
+        // Fetch insights on page load and every 30 seconds
+        fetchProactiveInsights();
+        setInterval(fetchProactiveInsights, 30000);
     </script>
 </body>
 </html>
