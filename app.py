@@ -137,7 +137,7 @@ if _HAVE_AUTHLIB and os.environ.get("AUTH0_DOMAIN"):
         try:
             token = oauth.auth0.authorize_access_token()
             session["user"] = token
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("loading"))
         except Exception as e:
             print(f"Auth error: {e}")
             return redirect(url_for("index"))
@@ -1480,6 +1480,18 @@ def index():
     """Serves the new homepage."""
     # Serve the index.html from the project's root folder
     return send_from_directory(app.root_path, 'index.html')
+
+@app.route('/loading')
+def loading():
+    """Serves the loading page that displays loading.gif before redirecting to dashboard.
+    Allows demo mode without authentication, but requires auth for normal mode."""
+    # Allow demo mode without auth
+    if request.args.get('demo') == '1':
+        return render_template('loading.html')
+    # Normal mode requires authentication
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    return render_template('loading.html')
 
 @app.route('/dashboard')
 @requires_auth
