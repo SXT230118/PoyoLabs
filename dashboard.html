@@ -6,6 +6,16 @@
     <title>Poyolabs - CauldronWatch</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
+        
+        /* Local/demo font: Longalberica - expects the file at /static/assets/Longalberica-DEMO.ttf */
+        @font-face {
+            font-family: 'Longalberica';
+            src: url('/static/assets/Longalberica-DEMO.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+        
         /* Basic styles to make it look good for a hackathon */
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -139,7 +149,10 @@
         .cauldron.warning-90 { border: 2px solid #f39c12; }
         .cauldron.warning-75 { border: 2px solid #f1c40f; }
 
-        .cauldron-name { font-weight: bold; }
+        .cauldron-name { 
+            font-family: 'Longalberica', serif;
+            font-weight: bold; 
+        }
 
         /* Agent Chat Styles */
         #chat-log {
@@ -232,7 +245,11 @@
     </div>
     <!-- ========== END NEW ========== -->
 
-    <h1>🔮 Poyolabs Factory Monitor</h1>
+    <h1>
+        <img src="/static/potion.png" alt="Potion" style="width:48px;height:48px;vertical-align:middle;margin-right:12px;">
+        Poyolabs Factory Monitor
+        <img src="/static/potion.png" alt="Potion" style="width:48px;height:48px;vertical-align:middle;margin-left:12px;">
+    </h1>
 
     <div class="container">
         <div class="dashboard">
