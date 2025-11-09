@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Network Topology — Example</title>
+  <style>
+    body { background: #fafafa; font-family: Inter, system-ui, -apple-system, Arial; margin: 0; padding: 24px; }
+    h1 { text-align:center; color:#222; margin-bottom:6px }
+    p.lead { text-align:center; color:#444; margin-top:0; margin-bottom:18px }
+    .frame { max-width:920px; margin:0 auto; background: #fff; border-radius:12px; padding:20px; box-shadow:0 6px 30px rgba(20,30,50,0.06)}
+    svg { width:100%; height:640px; display:block }
+    .node-market { fill:#f7b733; stroke:#222; stroke-width:4px }
+    .node-client { fill:#6d5bd3; stroke:#111; stroke-width:3px }
+    .node-label { font-weight:700; fill:#111; font-size:18px; text-anchor:middle }
+    .client-label { fill:#fff; font-size:13px; font-weight:700 }
+    .edge { stroke:#ff6f6f; stroke-width:3px; opacity:0.95 }
+    .edge-arrow { fill:#ff6f6f }
+    .dist-box { fill:#fff; stroke:#111; stroke-width:1; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <h1>Network Topology</h1>
+    <p class="lead">Example radial network map (static demo). Click and drag to pan; use mouse wheel to zoom.</p>
+
+    <svg id="map" viewBox="0 0 900 640" preserveAspectRatio="xMidYMid meet"></svg>
+  </div>
+
+  <script>
+    (function(){
+      const svg = document.getElementById('map');
+      const W = 900, H = 640;
+      const cx = W/2, cy = H/2;
+
+      // Nodes: market center and eight clients with radial distance (meters)
+      const nodes = [
+        { id: 'M', type: 'market', label: 'M', radius: 42 },
+        { id: 'C1', angle: 0, distance: 180, label: 'C1', radius: 22, distLabel: '30m' },
+        { id: 'C2', angle: 45, distance: 220, label: 'C2', radius: 22, distLabel: '35m' },
+        { id: 'C3', angle: 90, distance: 170, label: 'C3', radius: 22, distLabel: '40m' },
+        { id: 'C4', angle: 135, distance: 210, label: 'C4', radius: 22, distLabel: '45m' },
+        { id: 'C5', angle: 180, distance: 260, label: 'C5', radius: 22, distLabel: '50m' },
+        { id: 'C6', angle: 225, distance: 240, label: 'C6', radius: 22, distLabel: '55m' },
+        { id: 'C7', angle: 270, distance: 200, label: 'C7', radius: 22, distLabel: '60m' },
+        { id: 'C8', angle: 315, distance: 230, label: 'C8', radius: 22, distLabel: '65m' }
+      ];
+
+      // Helpers
+      function rad(deg) { return deg * Math.PI / 180 }
+
+      // Draw radial edges from each client to market
+      nodes.filter(n=>n.type!=='market').forEach(n=>{
+        const a = rad(n.angle);
+        const x = cx + Math.cos(a) * n.distance;
+        const y = cy - Math.sin(a) * n.distance;
+
+        // line
+        const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+        line.setAttribute('x1', x);
+        line.setAttribute('y1', y);
+        line.setAttribute('x2', cx);
+        line.setAttribute('y2', cy);
+        line.setAttribute('class','edge');
+        svg.appendChild(line);
+
+        // arrow head near market (short arrow pointing inward)
+        const dx = cx - x, dy = cy - y;
+        const len = Math.sqrt(dx*dx+dy*dy) || 1;
+        const ux = dx/len, uy = dy/len;
+        // position arrow a bit away from market center
+        const arrowDist = n.radius + 18;
+        const ax = cx - ux * arrowDist;
+        const ay = cy - uy * arrowDist;
+        const arrow = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+        const arrowSize = 8;
+        // create a small triangle perpendicular to direction
+        const leftx = ax + (-uy) * (arrowSize/2);
+        const lefty = ay + (ux) * (arrowSize/2);
+        const rightx = ax + (uy) * (arrowSize/2);
+        const righty = ay + (-ux) * (arrowSize/2);
+        const tipx = ax + ux * (arrowSize*1.2);
+        const tipy = ay + uy * (arrowSize*1.2);
+        arrow.setAttribute('points', `${leftx},${lefty} ${rightx},${righty} ${tipx},${tipy}`);
+        arrow.setAttribute('class','edge-arrow');
+        svg.appendChild(arrow);
+
+        // distance label in small white box midway
+        const mx = (x + cx)/2 - ux*20;
+        const my = (y + cy)/2 - uy*20;
+        const rectW = 38, rectH = 20;
+        const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        rect.setAttribute('x', mx - rectW/2);
+        rect.setAttribute('y', my - rectH/2);
+        rect.setAttribute('rx', 4);
+        rect.setAttribute('ry', 4);
+        rect.setAttribute('class','dist-box');
+        svg.appendChild(rect);
+        const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+        txt.setAttribute('x', mx);
+        txt.setAttribute('y', my + 4);
+        txt.setAttribute('text-anchor','middle');
+        txt.setAttribute('font-size','12');
+        txt.setAttribute('fill','#000');
+        txt.textContent = n.distLabel || '';
+        svg.appendChild(txt);
+
+        // store coordinates for node placement
+        n.x = x; n.y = y;
+      });
+
+      // Draw clients
+      nodes.filter(n=>n.type!=='market').forEach(n=>{
+        const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+        g.setAttribute('transform', `translate(${n.x}, ${n.y})`);
+
+        const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        c.setAttribute('r', n.radius);
+        c.setAttribute('class','node-client');
+        g.appendChild(c);
+
+        const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('y', 5);
+        label.setAttribute('class','client-label');
+        label.textContent = n.label;
+        g.appendChild(label);
+
+        svg.appendChild(g);
+      });
+
+      // Draw market in center
+      const mg = document.createElementNS('http://www.w3.org/2000/svg','g');
+      mg.setAttribute('transform', `translate(${cx}, ${cy})`);
+      const market = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      market.setAttribute('r', 48);
+      market.setAttribute('class','node-market');
+      mg.appendChild(market);
+      const mlabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+      mlabel.setAttribute('y', 8);
+      mlabel.setAttribute('class','node-label');
+      mlabel.textContent = 'M';
+      mg.appendChild(mlabel);
+      // small subtitle under market
+      const small = document.createElementNS('http://www.w3.org/2000/svg','text');
+      small.setAttribute('y', 36);
+      small.setAttribute('class','node-label');
+      small.setAttribute('font-size','12');
+      small.textContent = 'Market';
+      small.setAttribute('fill','#111');
+      mg.appendChild(small);
+      svg.appendChild(mg);
+
+      // Make simple pan & zoom (wheel + drag) for convenience
+      let view = { x:0, y:0, k:1 };
+      let isDown=false, start={x:0,y:0}, orig={x:0,y:0};
+      svg.addEventListener('mousedown', e=>{ isDown=true; start={x:e.clientX, y:e.clientY}; orig={x:view.x, y:view.y}; svg.style.cursor='grabbing' });
+      window.addEventListener('mousemove', e=>{ if(!isDown) return; const dx = e.clientX - start.x, dy = e.clientY - start.y; view.x = orig.x + dx; view.y = orig.y + dy; svg.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`; });
+      window.addEventListener('mouseup', ()=>{ isDown=false; svg.style.cursor='default' });
+      svg.addEventListener('wheel', e=>{ e.preventDefault(); const delta = Math.sign(e.deltaY)*-0.1; view.k = Math.max(0.4, Math.min(2.5, view.k + delta)); svg.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`; });
+
+    })();
+  </script>
+</body>
+</html>
