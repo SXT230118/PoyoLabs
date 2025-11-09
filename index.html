@@ -3,97 +3,120 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to Poyolabs</title>
+    <!-- tab stuff -->
+    <title>Welcome to PoyoLabs</title>
+    <link rel="icon" type="image/png" href="/static/potion.ico" size="32x32">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@400;700&display=swap');
 
+        /* Local/demo font: Longalberica - expects the file at /static/assets/Longalberica-DEMO.ttf */
+        @font-face {
+            font-family: 'Longalberica';
+            src: url('/static/assets/Longalberica-DEMO.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+
         body {
             font-family: 'Cinzel', serif;
-            background: #1a1a2e;
+            background: url('/static/closed.gif') center/cover fixed;
             color: #e0e0e0;
             margin: 0;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             overflow: hidden;
             text-align: center;
+            cursor: url('/static/cursor.cur'), default;
+            position: relative;
+            padding-bottom: 0;
         }
 
-        /* Add a subtle animated background */
+        /* Add a subtle darkening overlay to ensure text remains readable */
         body::before {
             content: '';
-            position: absolute;
+            position: fixed;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            background: 
-                radial-gradient(ellipse at 70% 30%, #4a00e0 0%, transparent 60%),
-                radial-gradient(ellipse at 30% 70%, #f7b733 0%, transparent 60%);
-            opacity: 0.15;
-            animation: slowSpin 20s linear infinite;
-        }
-
-        @keyframes slowSpin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
+            background: rgba(0, 0, 0, 0.5);
+            pointer-events: none;
         }
 
         .container {
             position: relative; /* To appear above the background */
-            background: rgba(30, 30, 46, 0.85);
-            backdrop-filter: blur(5px);
-            padding: 40px 60px;
-            border-radius: 15px;
+            background: rgba(90, 51, 24, 0.88); /* darker door brown tint */
+            backdrop-filter: blur(3px);
+            /* Smaller padding to reduce size */
+            padding: 34px 38px 26px;
+            /* Semi-elliptical shape: large radius at top, straight at bottom */
+            border-radius: 160px 160px 0 0;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            border: 1px solid #f7b733a0;
+            border: 1px solid rgba(170,120,60,0.55); /* adjust border to harmonize with darker brown */
+            /* Reduce negative translateY to move semiellipse down slightly more */
+            transform: translateY(-15px) scale(0.85);
+            transform-origin: center center;
+            /* Ensure bottom alignment with the door */
+            margin-top: auto;
+            /* Remove explicit width constraints (revert widening) */
+        }
+
+        .logo {
+            width: 72px;
+            height: 72px;
+            display: block;
+            margin: 0 auto 20px;
+            object-fit: contain;
         }
 
         h1 {
             font-family: 'MedievalSharp', cursive;
             font-size: 4rem;
             color: #f7b733; /* Potion gold */
-            margin: 0 0 10px;
-            text-shadow: 0 0 10px #f7b733;
+            margin: 0 0 8px;
+            text-shadow: none;
         }
 
-        p {
-            font-size: 1.25rem;
+        .container p {
+            font-size: 0.9rem;
             color: #ccc;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
+            font-family: 'Longalberica', serif; /* tagline uses Longalberica */
         }
 
         .enter-button {
             display: inline-block;
-            font-family: 'Cinzel', serif;
-            font-size: 1.2rem;
+            font-family: 'Longalberica', serif;
+            font-size: 1.1rem;
             font-weight: 700;
             color: #1a1a2e;
             background: #f7b733;
-            padding: 12px 30px;
-            border-radius: 5px;
+            padding: 10px 26px;
+            border-radius: 0;
             text-decoration: none;
             text-transform: uppercase;
             letter-spacing: 1px;
-            box-shadow: 0 0 20px #f7b733a0;
+            box-shadow: none;
             transition: all 0.3s ease;
         }
 
         .enter-button:hover {
             background: #ffdead; /* Lighter gold */
-            box-shadow: 0 0 30px #f7b733;
+            box-shadow: none;
             transform: scale(1.05);
         }
         .demo-button {
             display: inline-block;
-            font-family: 'Cinzel', serif;
-            font-size: 1rem;
+            font-family: 'Longalberica', serif;
+            font-size: 0.95rem;
             font-weight: 700;
             color: #f7b733;
             background: transparent;
-            padding: 10px 26px;
-            border-radius: 6px;
+            padding: 8px 24px;
+            border-radius: 0;
             text-decoration: none;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -104,23 +127,40 @@
         .demo-button:hover {
             background: rgba(247,183,51,0.08);
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(247,183,51,0.08);
+            box-shadow: none;
+        }
+
+        a, 
+        button, 
+        [role="button"], 
+        input[type="submit"], 
+        input[type="button"] {
+        /* Force the custom cursor here too, overriding the browser's default 'pointer' */
+        cursor: url('/static/cursor.cur'), auto !important;
+        }
+
+        a:hover, 
+        button:hover, 
+        a:active, 
+        button:active {
+        cursor: url('/static/cursor.cur'), auto !important;
         }
     </style>
 </head>
 <body>
 
     <div class="container">
-        <h1>🔮 Poyolabs</h1>
-        <p>Intelligent Potion Factory Management</p>
+    <img src="/static/potion.png" alt="Potion Logo" class="logo">
+    <h1>PoyoLabs</h1>
+    <p>A place for peak potion performance.</p>
         
-        <div style="display:flex;flex-direction:column;gap:16px;align-items:center;">
+    <div style="display:flex;flex-direction:column;gap:16px;align-items:center;margin-top:40px;margin-bottom:10px;">
             <a href="/login" class="enter-button" id="loginBtn">
-                🔒 Login to Enter
+                Clock In
             </a>
 
-            <a href="/dashboard?demo=1" class="demo-button" id="demoBtn">
-                View Demo (Public)
+            <a href="/loading?demo=1" class="demo-button" id="demoBtn">
+                Take a Peek
             </a>
         </div>
     </div>

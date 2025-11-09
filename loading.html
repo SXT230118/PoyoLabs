@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loading - PoyoLabs</title>
+    <link rel="icon" type="image/png" href="/static/potion.ico" size="32x32">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: url('/static/loading.gif') center/cover no-repeat;
+            background-color: #1a1a2e; /* Fallback color while GIF loads */
+            position: relative;
+        }
+        
+        #fade-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 1.5s ease-in;
+            z-index: 999;
+        }
+        
+        #fade-overlay.active {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="fade-overlay"></div>
+    <script>
+        // Redirect to dashboard after one full GIF cycle with prominent fade transition
+        // Check if this is demo mode
+        const urlParams = new URLSearchParams(window.location.search);
+        const isDemo = urlParams.get('demo') === '1';
+        
+        // Start prominent fade to black earlier (1.5 second fade duration)
+        setTimeout(function() {
+            document.getElementById('fade-overlay').classList.add('active');
+        }, 1600); // Start fade at 1.6 seconds
+        
+        // Redirect after fade completes
+        setTimeout(function() {
+            if (isDemo) {
+                window.location.href = '/dashboard?demo=1';
+            } else {
+                window.location.href = '/dashboard';
+            }
+        }, 3100); // Total time: 1.6s + 1.5s fade = 3.1s
+    </script>
+</body>
+</html>
