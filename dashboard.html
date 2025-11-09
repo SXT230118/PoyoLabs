@@ -6,6 +6,7 @@
     <title>PoyoLabs - CauldronWatch</title>
     <link rel="icon" type="image/png" href="/static/potion.ico" size="32x32">
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
         /* Basic styles to make it look good for a hackathon */
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -28,6 +29,7 @@
             }
         }
         h1 {
+            font-family: 'MedievalSharp', cursive;
             color: #f7b733; /* Potion gold */
             text-align: center;
         }
@@ -87,8 +89,14 @@
             box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         }
         h2 {
+            font-family: 'MedievalSharp', cursive;
             border-bottom: 2px solid #f7b733;
             padding-bottom: 5px;
+            text-align: center;
+        }
+        h3 {
+            font-family: 'MedievalSharp', cursive;
+            text-align: center;
         }
         
         /* Cauldron Styles */
@@ -233,7 +241,7 @@
 
     <div class="container">
         <div class="dashboard">
-            <h2>CauldronWatch Dashboard</h2>
+            <h2>Cauldron Dashboard</h2>
             <div style="display:flex;gap:16px;align-items:flex-start">
                 <div style="flex:2;min-width:0">
                     <div id="cauldron-grid"></div>
@@ -265,7 +273,7 @@
         </div>
 
         <div class="agent-panel">
-            <h2>PoyoLabs Agent</h2>
+            <h2>Poyo Pal</h2>
             <div id="chat-log">
                 <div class="chat-agent">Welcome, Manager. I am monitoring the factory and will alert you to any issues.</div>
             </div>
