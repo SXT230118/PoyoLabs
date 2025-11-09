@@ -17,6 +17,50 @@
             color: #f7b733; /* Potion gold */
             text-align: center;
         }
+        
+        /* ========== NEW: User profile section ========== */
+        .user-profile {
+            position: fixed;
+            top: 10px;
+            right: 20px;
+            background: rgba(42, 42, 78, 0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+
+        .user-profile img {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid #f7b733;
+        }
+
+        .user-profile .user-name {
+            color: #e0e0e0;
+            font-size: 0.9rem;
+        }
+
+        .user-profile .logout-btn {
+            background: #e74c3c;
+            color: #fff;
+            border: none;
+            padding: 5px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.3s;
+        }
+
+        .user-profile .logout-btn:hover {
+            background: #c0392b;
+        }
+        /* ========== END NEW ========== */
+        
         .container {
             display: grid;
             grid-template-columns: 2fr 1fr;
@@ -111,6 +155,14 @@
 </head>
 <body>
 
+    <!-- ========== NEW: User Profile Widget ========== -->
+    <div class="user-profile" id="user-profile" style="display:none;">
+        <img id="user-avatar" src="" alt="User">
+        <span class="user-name" id="user-name">Loading...</span>
+        <button class="logout-btn" onclick="logout()">Logout</button>
+    </div>
+    <!-- ========== END NEW ========== -->
+
     <h1>🔮 Poyolabs Factory Monitor</h1>
 
     <div class="container">
@@ -150,6 +202,29 @@
     </div>
 
     <script>
+        // ========== NEW: User Profile Functions ==========
+        async function loadUserProfile() {
+            try {
+                const response = await fetch('/api/user');
+                if (response.ok) {
+                    const user = await response.json();
+                    document.getElementById('user-name').textContent = user.name || user.email || 'User';
+                    document.getElementById('user-avatar').src = user.picture || 'https://ui-avatars.com/api/?name=' + encodeURIComponent(user.name || 'User');
+                    document.getElementById('user-profile').style.display = 'flex';
+                }
+            } catch (error) {
+                console.log('Not logged in or error fetching user:', error);
+            }
+        }
+
+        function logout() {
+            window.location.href = '/logout';
+        }
+
+        // Load user profile on page load
+        loadUserProfile();
+        // ========== END NEW ==========
+
         // Get all the HTML elements we need
         const cauldronGrid = document.getElementById('cauldron-grid');
         const chatLog = document.getElementById('chat-log');
