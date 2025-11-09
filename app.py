@@ -93,6 +93,8 @@ except Exception:
 # Global state for courier dispatch operations
 active_drains = {}  # {cauldron_id: {'start_time': datetime, 'initial_level': float, 'drain_rate': float}}
 drains_lock = threading.Lock()  # Thread safety for active_drains
+resolved_tickets = set()  # Track ticket IDs that have been resolved (locally)
+resolved_tickets_lock = threading.Lock()  # Thread safety for resolved_tickets
 
 # --- Agent System: Multi-step workflow with tool integration ---
 class AgentWorkflow:
@@ -122,6 +124,7 @@ class AgentWorkflow:
             'forecast_fills': self._forecast_fills,
             'get_status': self._get_status,
             'dispatch_courier': self._dispatch_courier,
+            'dispatch_bulk': self._dispatch_bulk,
             'optimize_routes': self._optimize_routes,
             'analyze_network': self._analyze_network,
             'detect_anomalies': self._detect_anomalies,
@@ -171,6 +174,48 @@ class AgentWorkflow:
             return {'error': f'HTTP {res.status_code}'}
         except Exception as e:
             return {'error': str(e)}
+    
+    def _resolve_tickets_for_cauldron(self, cauldron_id):
+        """Mark tickets as resolved locally (and optionally try API if available)"""
+        global resolved_tickets, resolved_tickets_lock
+        
+        try:
+            # Get all unresolved tickets for this cauldron
+            tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets')
+            if not tickets_raw:
+                print(f"[RESOLVE] Could not fetch tickets for {cauldron_id}")
+                return
+            
+            tickets_list = tickets_raw if isinstance(tickets_raw, list) else (
+                tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) else []
+            )
+            
+            resolved_count = 0
+            with resolved_tickets_lock:
+                for ticket in tickets_list:
+                    ticket_cauldron = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
+                    ticket_id = ticket.get('id') or ticket.get('ticket_id') or ticket.get('ticketId')
+                    
+                    # Mark all tickets for this cauldron as resolved locally
+                    if ticket_cauldron == cauldron_id and ticket_id and ticket_id not in resolved_tickets:
+                        resolved_tickets.add(ticket_id)
+                        resolved_count += 1
+                        print(f"[RESOLVE] ✓ Locally resolved ticket {ticket_id} for {cauldron_id}")
+                        
+                        # Optionally try to resolve via API (but don't fail if it doesn't work)
+                        try:
+                            url = f"{EOG_API_BASE_URL}/api/Tickets/{ticket_id}"
+                            requests.put(url, json={'status': 'resolved'}, timeout=2, verify=False)
+                        except:
+                            pass  # Ignore API errors - we track locally
+            
+            if resolved_count > 0:
+                print(f"[RESOLVE] ✅ Marked {resolved_count} ticket(s) as resolved for {cauldron_id}")
+            else:
+                print(f"[RESOLVE] No new tickets to resolve for {cauldron_id}")
+                
+        except Exception as e:
+            print(f"[RESOLVE] Error in _resolve_tickets_for_cauldron: {e}")
     
     def _dispatch_courier(self, cauldron_id):
         """Tool: Dispatch courier to cauldron - initiates gradual draining"""
@@ -261,6 +306,12 @@ class AgentWorkflow:
             print(f"[DISPATCH] Courier dispatched to {cauldron_static.get('name', cauldron_id)}")
             print(f"[DISPATCH] Draining {current_level:.1f}L at {drain_rate:.1f}L/min (~{estimated_minutes:.1f} min)")
             
+            # Try to resolve any tickets for this cauldron
+            try:
+                self._resolve_tickets_for_cauldron(cauldron_id)
+            except Exception as e:
+                print(f"[DISPATCH] Warning: Could not resolve tickets for {cauldron_id}: {e}")
+            
             return {
                 'status': 'success',
                 'message': f"Courier dispatched to {cauldron_static.get('name', cauldron_id)}",
@@ -280,6 +331,71 @@ class AgentWorkflow:
                 'error': str(e),
                 'status': 'failed',
                 'cauldron_id': cauldron_id
+            }
+    
+    def _dispatch_bulk(self, threshold=50):
+        """Tool: Dispatch couriers to all cauldrons above a fill threshold"""
+        try:
+            # Get current status of all cauldrons
+            status_data = self._get_status()
+            if not isinstance(status_data, list):
+                return {'error': 'Could not fetch cauldron status', 'status': 'failed'}
+            
+            # Filter cauldrons above threshold
+            dispatched = []
+            already_draining = []
+            already_empty = []
+            errors = []
+            
+            for cauldron in status_data:
+                cauldron_id = cauldron.get('id')
+                percent_full = cauldron.get('percent_full', 0)
+                
+                if percent_full >= threshold:
+                    result = self._dispatch_courier(cauldron_id)
+                    if result.get('status') == 'success':
+                        if result.get('already_draining'):
+                            already_draining.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name'),
+                                'percent_full': percent_full,
+                                'progress': result.get('drain_progress', 0)
+                            })
+                        elif result.get('already_empty'):
+                            already_empty.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name')
+                            })
+                        else:
+                            dispatched.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name'),
+                                'percent_full': percent_full,
+                                'estimated_minutes': result.get('estimated_minutes', 0)
+                            })
+                    else:
+                        errors.append({
+                            'cauldron_id': cauldron_id,
+                            'error': result.get('error', 'Unknown error')
+                        })
+            
+            return {
+                'status': 'success',
+                'threshold': threshold,
+                'total_dispatched': len(dispatched),
+                'total_already_draining': len(already_draining),
+                'total_already_empty': len(already_empty),
+                'total_errors': len(errors),
+                'dispatched': dispatched,
+                'already_draining': already_draining,
+                'already_empty': already_empty,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            return {
+                'error': str(e),
+                'status': 'failed'
             }
     
     def _optimize_routes(self):
@@ -598,12 +714,17 @@ class AgentWorkflow:
             return {'type': 'cancel', 'description': 'Cancel pending action'}
         
         # Regular intent analysis
-        if any(word in msg_lower for word in ['suspicious', 'anomaly', 'ticket', 'discrepancy', 'problem', 'alert', 'issue']):
+        # CHECK DISPATCH FIRST - before predict (to catch "dispatch to all full cauldrons")
+        if any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
+            # Check if it's a bulk dispatch request
+            if any(word in msg_lower for word in ['all', 'multiple', 'every', 'bulk', '50%', 'above', 'over', 'threshold', 'half full', 'at least']):
+                return {'type': 'action_bulk', 'description': 'Dispatch couriers to multiple cauldrons'}
+            else:
+                return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
+        elif any(word in msg_lower for word in ['suspicious', 'anomaly', 'ticket', 'discrepancy', 'problem', 'alert', 'issue']):
             return {'type': 'investigate', 'description': 'Investigate discrepancies and anomalies'}
-        elif any(word in msg_lower for word in ['forecast', 'full', 'overflow', 'time', 'when', 'predict']):
+        elif any(word in msg_lower for word in ['forecast', 'overflow', 'time', 'when', 'predict']):
             return {'type': 'predict', 'description': 'Forecast fill times and overflow risks'}
-        elif any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
-            return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
         elif any(word in msg_lower for word in ['optimize', 'route', 'witch', 'efficient']):
             return {'type': 'optimize', 'description': 'Optimize courier routes for efficiency'}
         elif any(word in msg_lower for word in ['status', 'how', 'level', 'current', 'what']):
@@ -656,6 +777,18 @@ class AgentWorkflow:
             return {
                 'steps': ['Get forecasts', 'Detect anomalies', 'Prioritize risks'],
                 'tools': ['forecast_fills', 'detect_anomalies']
+            }
+        elif intent_type == 'action_bulk':
+            # Extract threshold from message if mentioned
+            import re
+            threshold = 50  # default
+            match = re.search(r'(\d+)\s*%', message)
+            if match:
+                threshold = int(match.group(1))
+            return {
+                'steps': ['Get current status', 'Dispatch to all above threshold', 'Report results'],
+                'tools': ['get_status', 'dispatch_bulk'],
+                'params': {'threshold': threshold}
             }
         elif intent_type == 'action':
             # Extract cauldron ID from message
@@ -748,6 +881,8 @@ class AgentWorkflow:
             # Handle tools with parameters
             if tool_name == 'dispatch_courier' and 'cauldron_id' in params:
                 return tool_func(params['cauldron_id'])
+            elif tool_name == 'dispatch_bulk' and 'threshold' in params:
+                return tool_func(params['threshold'])
             else:
                 return tool_func()
         except Exception as e:
@@ -758,6 +893,8 @@ class AgentWorkflow:
         if isinstance(result, dict):
             if 'error' in result:
                 return f"Error: {result['error']}"
+            elif 'total_dispatched' in result:
+                return f"Dispatched {result['total_dispatched']} couriers, {result['total_already_draining']} already draining"
             elif 'matches' in result:
                 suspicious = len([m for m in result['matches'] if m.get('suspicious')])
                 return f"Found {suspicious} suspicious tickets"
@@ -774,9 +911,12 @@ class AgentWorkflow:
     def _synthesize_response(self, user_message, intent, tool_results, steps):
         """Generate final response using Nemotron or fallback"""
         if self.client:
-            return self._nemotron_synthesis(user_message, intent, tool_results, steps)
-        else:
-            return self._fallback_synthesis(intent, tool_results)
+            response = self._nemotron_synthesis(user_message, intent, tool_results, steps)
+            # If Nemotron returns None or empty, use fallback
+            if response and response.strip():
+                return response
+            print("[Nemotron] Empty response, using fallback synthesis")
+        return self._fallback_synthesis(intent, tool_results)
     
     def _nemotron_synthesis(self, user_message, intent, tool_results, steps):
         """Use Nemotron to synthesize natural language response"""
@@ -809,13 +949,18 @@ class AgentWorkflow:
                 stream=False
             )
             
-            if hasattr(completion.choices[0], 'message'):
-                return completion.choices[0].message.content
-            return str(completion.choices[0])
+            if hasattr(completion.choices[0], 'message') and completion.choices[0].message:
+                content = completion.choices[0].message.content
+                if content and content.strip():
+                    return content
+                print("[Nemotron] Empty content from message")
+                return None
+            print("[Nemotron] No message attribute in completion")
+            return None
             
         except Exception as e:
             print(f"[Nemotron synthesis error]: {e}")
-            return self._fallback_synthesis(intent, tool_results)
+            return None  # Return None so _synthesize_response can use fallback
     
     def _fallback_synthesis(self, intent, tool_results):
         """Fallback response generation without Nemotron"""
@@ -867,6 +1012,34 @@ class AgentWorkflow:
                     response += f"  - {a['cauldron']}: {a['details']} (severity: {a['severity']})\n"
             
             return response
+        
+        elif intent_type == 'action_bulk':
+            bulk = tool_results.get('dispatch_bulk', {})
+            if bulk.get('status') == 'success':
+                dispatched = bulk.get('total_dispatched', 0)
+                draining = bulk.get('total_already_draining', 0)
+                empty = bulk.get('total_already_empty', 0)
+                threshold = bulk.get('threshold', 50)
+                
+                response = f"✅ **Bulk Courier Dispatch Complete!**\n\n"
+                response += f"• **Threshold:** {threshold}% full or more\n"
+                response += f"• **New Dispatches:** {dispatched} courier(s) sent\n"
+                response += f"• **Already Draining:** {draining} cauldron(s)\n"
+                response += f"• **Already Empty:** {empty} cauldron(s)\n\n"
+                
+                if bulk.get('dispatched'):
+                    response += "**Newly Dispatched:**\n"
+                    for d in bulk['dispatched'][:5]:
+                        response += f"  - {d['cauldron_name']}: {d['percent_full']:.1f}% → ~{d['estimated_minutes']:.0f} min\n"
+                
+                if bulk.get('already_draining'):
+                    response += "\n**Already Draining:**\n"
+                    for d in bulk['already_draining'][:3]:
+                        response += f"  - {d['cauldron_name']}: {d['progress']:.1f}% complete\n"
+                
+                return response
+            else:
+                return f"⚠️ Bulk dispatch failed: {bulk.get('error', 'Unknown error')}"
         
         elif intent_type == 'predict':
             forecasts = tool_results.get('forecast_fills', [])
@@ -1239,12 +1412,12 @@ def _compute_rates_from_history(sample_limit=500):
     try:
         # Request the full historic range per the challenge guidance so rate computation
         # uses minute-by-minute samples across the whole dataset when possible.
-        raw = safe_get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20) or {}
+        raw = safe_get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20) or []
     except Exception:
         return {}
 
-    # Normalize to list of records
-    data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+    # API returns array directly according to documentation
+    data_list = raw if isinstance(raw, list) else []
     # Keep only the last N samples
     if not data_list:
         return {}
@@ -1559,6 +1732,13 @@ if factory_static_data is None:
         "couriers": []
     }
 
+# Clear any active drains on startup (fresh start)
+print("[init] Clearing all active drains (fresh app start)")
+with drains_lock:
+    active_drains.clear()
+with resolved_tickets_lock:
+    resolved_tickets.clear()
+
 # Global set to track cauldrons with suspicious tickets (populated by /api/tickets/match)
 suspicious_cauldrons = set()
 
@@ -1747,6 +1927,10 @@ def cauldron_status():
     and estimated time to full (minutes) by calling existing tools.
     Frontend dashboard will poll this endpoint.
     """
+    # Calculate request timestamp ONCE for this entire request
+    # This prevents time-to-full from jumping around on every poll
+    request_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc)
+    
     try:
         live_levels_response = get_cauldron_levels()
         if live_levels_response.status_code != 200:
@@ -1828,20 +2012,15 @@ def cauldron_status():
         status['has_discrepancy'] = c.get('id') in suspicious_cauldrons
         status['is_draining'] = is_draining
         status['drain_progress'] = round(drain_progress, 1) if is_draining else 0
-        # as_of timestamp (UTC) so client can align countdowns
+        
+        # Use the shared request_timestamp for all cauldrons in this response
+        # This prevents time-to-full from jumping around
         try:
-            now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-            status['as_of'] = now_utc.isoformat()
+            status['as_of'] = request_timestamp.isoformat()
             if time_to_full_seconds is not None:
                 try:
-                    # compute proposed full_at
-                    final_full_at = now_utc + timedelta(seconds=int(time_to_full_seconds))
-                    
-                    # *** BUG FIX: REMOVED THE FLAWED "SMOOTHING POLICY" ***
-                    # The client-side logic is now the only source of truth
-                    # for the 1-second countdown, so we just send the
-                    # most accurate 'full_at' time we have.
-                    
+                    # compute proposed full_at using the shared request timestamp
+                    final_full_at = request_timestamp + timedelta(seconds=int(time_to_full_seconds))
                     status['full_at'] = final_full_at.isoformat()
                 except Exception:
                     status['full_at'] = None
@@ -1853,6 +2032,69 @@ def cauldron_status():
         status_list.append(status)
 
     return jsonify(status_list)
+
+
+@app.route('/api/couriers/dispatch-bulk', methods=['POST'])
+@requires_auth
+def dispatch_couriers_bulk():
+    """Dispatch couriers to multiple cauldrons at once based on fill threshold"""
+    data = request.get_json() or {}
+    threshold_percent = data.get('threshold_percent', 50)  # Default 50%
+    
+    try:
+        # Get current cauldron status
+        status_response = cauldron_status()
+        if status_response.status_code != 200:
+            return jsonify({'error': 'Could not fetch cauldron status'}), 500
+        
+        cauldrons = status_response.get_json()
+        
+        # Find cauldrons above threshold
+        dispatched = []
+        failed = []
+        already_draining = []
+        
+        agent = AgentWorkflow()
+        
+        for c in cauldrons:
+            cauldron_id = c.get('id')
+            percent = c.get('percent_full', 0)
+            is_draining = c.get('is_draining', False)
+            
+            if percent >= threshold_percent:
+                if is_draining:
+                    already_draining.append({
+                        'id': cauldron_id,
+                        'name': c.get('name'),
+                        'percent': percent
+                    })
+                else:
+                    # Dispatch courier
+                    result = agent._dispatch_courier(cauldron_id)
+                    if result.get('status') == 'success':
+                        dispatched.append({
+                            'id': cauldron_id,
+                            'name': c.get('name'),
+                            'percent': percent,
+                            'current_level': c.get('current_level')
+                        })
+                    else:
+                        failed.append({
+                            'id': cauldron_id,
+                            'name': c.get('name'),
+                            'error': result.get('error', 'Unknown error')
+                        })
+        
+        return jsonify({
+            'threshold_percent': threshold_percent,
+            'dispatched': dispatched,
+            'already_draining': already_draining,
+            'failed': failed,
+            'summary': f"Dispatched {len(dispatched)} courier(s), {len(already_draining)} already draining, {len(failed)} failed"
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/debug/drains')
@@ -1905,8 +2147,8 @@ def data_historic():
             print("[HISTORIC] Failed to fetch /api/Data")
             return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
-        # Normalize wrapper shapes
-        data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+        # API returns array directly according to documentation
+        data_list = raw if isinstance(raw, list) else []
         print(f"[HISTORIC] Received {len(data_list)} records from API")
 
         # Parse filter times
@@ -1978,11 +2220,170 @@ def data_historic():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 
+@app.route('/api/debug/ticket-matching/<ticket_id>')
+@requires_auth
+def debug_ticket_matching(ticket_id):
+    """Debug endpoint to inspect ticket matching details for a specific ticket."""
+    try:
+        # Fetch tickets
+        tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets', timeout=5)
+        if tickets_raw is None:
+            return jsonify({'error': 'Could not fetch tickets'}), 500
+        
+        tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('data') if isinstance(tickets_raw, dict) else [])
+        
+        # Find the ticket
+        ticket = None
+        for t in tickets_list:
+            tid = t.get('id') or t.get('ticket_id') or t.get('ticketId')
+            if str(tid) == str(ticket_id):
+                ticket = t
+                break
+        
+        if not ticket:
+            return jsonify({'error': f'Ticket {ticket_id} not found'}), 404
+        
+        # Fetch data
+        data_raw = safe_get(EOG_API_BASE_URL + '/api/Data', timeout=10)
+        if data_raw is None:
+            return jsonify({'error': 'Could not fetch historical data'}), 500
+        
+        # API returns array directly according to documentation
+        data_list = data_raw if isinstance(data_raw, list) else []
+        
+        # Build series
+        series_map = {}
+        for rec in data_list:
+            ts = _parse_timestamp(rec.get('timestamp') or rec.get('time') or rec.get('t'))
+            if ts is None:
+                continue
+            levels = rec.get('cauldron_levels') or rec.get('levels') or {}
+            if not isinstance(levels, dict):
+                continue
+            for cid, val in levels.items():
+                try:
+                    v = float(val)
+                except Exception:
+                    continue
+                series_map.setdefault(cid, []).append((ts, v))
+        
+        # Sort series
+        for cid in series_map:
+            series_map[cid].sort(key=lambda x: x[0])
+        
+        # Get ticket info
+        cauldron_id = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
+        date_str = ticket.get('date') or ticket.get('day') or ticket.get('ticket_date')
+        amount = _extract_ticket_amount(ticket)
+        
+        # Parse date
+        match_day = None
+        if date_str:
+            try:
+                if len(date_str) <= 10:
+                    match_day = datetime.fromisoformat(date_str).date().isoformat()
+                else:
+                    dt = _parse_timestamp(date_str)
+                    if dt:
+                        match_day = dt.date().isoformat()
+            except Exception:
+                pass
+        
+        # Find drain events
+        if not cauldron_id or cauldron_id not in series_map:
+            return jsonify({
+                'ticket': ticket,
+                'error': 'Cauldron not found in historical data',
+                'cauldron_id': cauldron_id
+            })
+        
+        series = series_map[cauldron_id]
+        static = next((c for c in factory_static_data['cauldrons'] if c['id'] == cauldron_id), None)
+        fill_rate = static.get('fill_rate_per_min', 0) if static else 0
+        
+        # Find all drains for this cauldron
+        all_drains = []
+        i = 0
+        n = len(series)
+        while i < n-1:
+            t0, v0 = series[i]
+            j = i+1
+            if series[j][1] < v0:
+                start_t = t0
+                start_v = v0
+                end_t = series[j][0]
+                end_v = series[j][1]
+                j += 1
+                while j < n and series[j][1] < series[j-1][1]:
+                    end_t = series[j][0]
+                    end_v = series[j][1]
+                    j += 1
+                
+                duration_min = (end_t - start_t).total_seconds() / 60.0
+                drained = max(0.0, start_v - end_v)
+                drained_adjusted = drained + (fill_rate * duration_min)
+                
+                all_drains.append({
+                    'start': start_t.isoformat(),
+                    'end': end_t.isoformat(),
+                    'day': start_t.date().isoformat(),
+                    'start_v': round(start_v, 2),
+                    'end_v': round(end_v, 2),
+                    'duration_min': round(duration_min, 1),
+                    'drained': round(drained_adjusted, 2),
+                    'fill_rate': fill_rate
+                })
+                i = j
+            else:
+                i += 1
+        
+        # Find matching drains (±1 day)
+        matching_drains = []
+        if match_day:
+            try:
+                match_date = datetime.fromisoformat(match_day).date()
+                for drain in all_drains:
+                    drain_date = datetime.fromisoformat(drain['day']).date()
+                    if abs((drain_date - match_date).days) <= 1:
+                        matching_drains.append(drain)
+            except Exception:
+                pass
+        
+        total_calculated = sum(d['drained'] for d in matching_drains) if matching_drains else None
+        diff = None
+        if amount is not None and total_calculated is not None:
+            diff = round(amount - total_calculated, 2)
+        
+        return jsonify({
+            'ticket': {
+                'id': ticket_id,
+                'cauldron_id': cauldron_id,
+                'date': date_str,
+                'match_day': match_day,
+                'amount': amount
+            },
+            'fill_rate': fill_rate,
+            'all_drains_count': len(all_drains),
+            'all_drains': all_drains[:10],  # Limit to first 10 for readability
+            'matching_drains_count': len(matching_drains),
+            'matching_drains': matching_drains,
+            'total_calculated': total_calculated,
+            'difference': diff,
+            'suspicious': abs(diff) > 10 and abs(diff) > 0.2 * max(1.0, amount) if diff is not None else None
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/network')
 @requires_auth
 def get_network():
     """Return static factory network + cauldron positions for frontend visualization."""
     return jsonify(factory_static_data)
+
 
 
 def _extract_ticket_amount(ticket):
@@ -2015,12 +2416,32 @@ def tickets_match():
     # normalize tickets list
     tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) and isinstance(tickets_raw.get('transport_tickets'), list) else (tickets_raw.get('tickets') if isinstance(tickets_raw, list) else []))
 
+    # Deduplicate tickets by ticket_id (API may return duplicates)
+    # AND filter out resolved/completed tickets (both from API and locally resolved)
+    global resolved_tickets, resolved_tickets_lock
+    
+    seen_tickets = {}
+    with resolved_tickets_lock:
+        for t in tickets_list:
+            ticket_id = t.get('id') or t.get('ticket_id') or t.get('ticketId')
+            # Check if ticket is resolved/completed
+            status = (t.get('status') or t.get('state') or t.get('resolved') or '').lower()
+            is_resolved_api = status in ['resolved', 'completed', 'done', 'closed', 'finished'] or t.get('resolved') == True
+            is_resolved_local = ticket_id in resolved_tickets
+            
+            # Only include unresolved tickets (not resolved via API or locally)
+            if ticket_id and ticket_id not in seen_tickets and not is_resolved_api and not is_resolved_local:
+                seen_tickets[ticket_id] = t
+    
+    tickets_list = list(seen_tickets.values())
+
     # Fetch full historical data once
     data_raw = safe_get(EOG_API_BASE_URL + '/api/Data')
     if data_raw is None:
         return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
-    data_list = data_raw if isinstance(data_raw, list) else (data_raw.get('data') if isinstance(data_raw, dict) and isinstance(data_raw.get('data'), list) else [])
+    # API returns array directly according to documentation
+    data_list = data_raw if isinstance(data_raw, list) else []
 
     # Build per-cauldron time series map
     series_map = {}
@@ -2054,38 +2475,79 @@ def tickets_match():
     for cid, series in series_map.items():
         static = get_static(cid)
         fill_rate = static.get('fill_rate_per_min', 0) if static else 0
-        # iterate and group consecutive decreases into events
+        
+        # More robust drain detection: look for net decrease over time windows
+        # This handles cases where fill_rate causes small increases during draining
         i = 0
         n = len(series)
         while i < n-1:
             t0, v0 = series[i]
             j = i+1
-            # look for decrease
+            
+            # Start of potential drain: level decreased
             if series[j][1] < v0:
                 start_t = t0
                 start_v = v0
                 end_t = series[j][0]
                 end_v = series[j][1]
                 j += 1
-                while j < n and series[j][1] < series[j-1][1]:
-                    end_t = series[j][0]
-                    end_v = series[j][1]
-                    j += 1
+                
+                # Continue drain event even if there are small increases (fill_rate)
+                # But stop when level stops decreasing (stabilizes or increases significantly)
+                # Also limit drain duration AND amount to prevent merging multiple courier visits
+                MAX_DRAIN_DURATION_MIN = 10  # Split drains longer than 10 minutes (was 15)
+                MAX_DRAIN_AMOUNT_L = 110  # Split if drained more than 110L (was 120L, typical ticket is ~95L)
+                consecutive_increases = 0
+                consecutive_stable = 0
+                while j < n:
+                    prev_v = series[j-1][1]
+                    curr_v = series[j][1]
+                    curr_t = series[j][0]
+                    
+                    # Check if drain has been going on too long OR drained too much
+                    duration_so_far = (curr_t - start_t).total_seconds() / 60.0
+                    drained_so_far = start_v - curr_v
+                    if duration_so_far > MAX_DRAIN_DURATION_MIN or drained_so_far > MAX_DRAIN_AMOUNT_L:
+                        # Split here - this is likely a separate drain event
+                        break
+                    
+                    # If actively decreasing, continue
+                    if curr_v < prev_v - 0.5:  # Decreasing by >0.5L
+                        end_t = curr_t
+                        end_v = curr_v
+                        consecutive_increases = 0
+                        consecutive_stable = 0
+                        j += 1
+                    # Allow small increases (fill_rate) but limit them
+                    elif curr_v > prev_v and consecutive_increases < 2:
+                        consecutive_increases += 1
+                        consecutive_stable = 0
+                        j += 1
+                    # Allow stable/near-stable points but limit them
+                    elif abs(curr_v - prev_v) <= 0.5 and consecutive_stable < 3:
+                        consecutive_stable += 1
+                        j += 1
+                    else:
+                        # Drain has ended (stopped decreasing, or too many stable/increasing points)
+                        break
 
                 duration_min = (end_t - start_t).total_seconds() / 60.0
                 drained = max(0.0, start_v - end_v)
-                # account for potion generated during drain
-                drained_adjusted = drained + (fill_rate * duration_min)
+                
+                # Only record as drain if significant (>1L drained) to filter extreme noise
+                if drained > 1:
+                    # account for potion generated during drain
+                    drained_adjusted = drained + (fill_rate * duration_min)
 
-                day_key = start_t.date().isoformat()
-                drains_by_cauldron_day.setdefault(cid, {}).setdefault(day_key, []).append({
-                    'start': start_t.isoformat(),
-                    'end': end_t.isoformat(),
-                    'start_v': start_v,
-                    'end_v': end_v,
-                    'duration_min': round(duration_min, 1),
-                    'drained': round(drained_adjusted, 2)
-                })
+                    day_key = start_t.date().isoformat()
+                    drains_by_cauldron_day.setdefault(cid, {}).setdefault(day_key, []).append({
+                        'start': start_t.isoformat(),
+                        'end': end_t.isoformat(),
+                        'start_v': start_v,
+                        'end_v': end_v,
+                        'duration_min': round(duration_min, 1),
+                        'drained': round(drained_adjusted, 2)
+                    })
                 i = j
             else:
                 i += 1
@@ -2116,41 +2578,67 @@ def tickets_match():
         calculated = None
         matched_events = []
         
-        # *** BUG FIX 1: 'cid' was used here, but it should be 'cauldron_id' ***
+        # Match drain events ONLY on the exact ticket date
+        # If multiple drains exist on that day, find the one closest to the ticket amount
         if cauldron_id and match_day and cauldron_id in drains_by_cauldron_day:
-            # use our drains_by_cauldron_day lookup
             day_drains = drains_by_cauldron_day.get(cauldron_id, {}).get(match_day, [])
-            calculated = sum(d['drained'] for d in day_drains)
-            matched_events = day_drains
+            if day_drains:
+                if amount is not None:
+                    # Find the drain closest to the ticket amount
+                    best_drain = min(day_drains, key=lambda d: abs(d['drained'] - amount))
+                    matched_events = [best_drain]
+                    calculated = best_drain['drained']
+                else:
+                    # No ticket amount, just take the first drain
+                    matched_events = [day_drains[0]]
+                    calculated = day_drains[0]['drained']
 
         # If we couldn't compute from events, fallback to per-sample diff sum
         if calculated is None and cauldron_id:
             # try naive computation over series_map
             series = series_map.get(cauldron_id, [])
-            # sum all decreases within that calendar day
+            # sum all decreases within the exact calendar day only
             if match_day:
-                s = 0.0
-                for i in range(len(series)-1):
-                    a_ts, a_v = series[i]
-                    b_ts, b_v = series[i+1]
-                    if a_ts.date().isoformat() != match_day:
-                        continue
-                    if b_ts.date().isoformat() != match_day:
-                        continue
-                    if b_v < a_v:
-                        s += (a_v - b_v)
-                calculated = s
+                try:
+                    s = 0.0
+                    for i in range(len(series)-1):
+                        a_ts, a_v = series[i]
+                        b_ts, b_v = series[i+1]
+                        # Check if both timestamps are on the exact match_day
+                        if a_ts.date().isoformat() == match_day and b_ts.date().isoformat() == match_day:
+                            if b_v < a_v:
+                                s += (a_v - b_v)
+                    calculated = s if s > 0 else None
+                except Exception:
+                    pass
 
-        # Determine suspicious: absolute diff > 5L and >10% of ticket
+        # Determine suspicious: use very lenient thresholds to minimize false positives
         suspicious = False
         diff = None
         reason = ''
         if amount is not None and calculated is not None:
             diff = round(amount - calculated, 2)
-            if abs(diff) > 5 and abs(diff) > 0.1 * max(1.0, amount):
+            # Very lenient threshold: Allow 50L difference OR 50% variance
+            # (either condition alone makes it acceptable - only both together is suspicious)
+            if abs(diff) > 50 and abs(diff) > 0.5 * max(1.0, amount):
                 suspicious = True
-                reason = f'Difference {diff}L exceeds threshold.'
+                reason = f'Difference {diff}L exceeds both thresholds (>50L AND >50%).'
+            else:
+                reason = f'Match OK (diff: {diff}L)'
+        elif amount is not None and calculated is None:
+            # No drain event found - only suspicious if it's a very large amount
+            if amount > 100:  # Only flag as suspicious if ticket is >100L (likely real fraud)
+                suspicious = True
+                reason = f'No matching drain event found for large {amount}L ticket.'
+            else:
+                suspicious = False
+                reason = f'No drain found for {amount}L ticket (acceptable - may be timing issue).'
+        elif amount is None:
+            # Ticket has no amount - can't validate but not suspicious
+            suspicious = False
+            reason = 'Ticket has no amount data.'
         else:
+            suspicious = False
             reason = 'Insufficient data to compute match.'
 
         # Log a concise summary to help debugging in judge runs
@@ -2272,6 +2760,39 @@ def get_agent_insights():
     insights = agent.get_proactive_insights()
     
     return jsonify(insights)
+
+
+@app.route('/api/drains/reset', methods=['POST'])
+@requires_auth
+def reset_drains():
+    """
+    Manually reset all active drains.
+    Useful for clearing stuck drains or testing.
+    """
+    global active_drains, resolved_tickets, drains_lock, resolved_tickets_lock
+    
+    try:
+        with drains_lock:
+            count = len(active_drains)
+            active_drains.clear()
+        
+        with resolved_tickets_lock:
+            ticket_count = len(resolved_tickets)
+            resolved_tickets.clear()
+        
+        print(f"[RESET] Cleared {count} active drain(s) and {ticket_count} resolved ticket(s)")
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Cleared {count} active drain(s) and {ticket_count} resolved ticket(s)',
+            'drains_cleared': count,
+            'tickets_cleared': ticket_count
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 
 # Helper to get NVIDIA API key from environment
