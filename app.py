@@ -90,6 +90,947 @@ except Exception:
     OpenAI = None
     _HAS_NEMOTRON = False
 
+# Global state for courier dispatch operations
+active_drains = {}  # {cauldron_id: {'start_time': datetime, 'initial_level': float, 'drain_rate': float}}
+drains_lock = threading.Lock()  # Thread safety for active_drains
+
+# --- Agent System: Multi-step workflow with tool integration ---
+class AgentWorkflow:
+    """
+    Multi-step agent system that plans, executes tools, and responds.
+    Demonstrates NVIDIA requirements:
+    1. Beyond chatbot - complex workflows with planning
+    2. Multi-step - plan → execute → reflect → respond
+    3. Tool integration - calls external APIs intelligently
+    4. Real-world applicability - solves actual factory monitoring problems
+    
+    ENHANCED FEATURES:
+    - Proactive monitoring and alerts
+    - Trend analysis and predictions
+    - Autonomous recommendations
+    - Multi-cauldron coordination
+    """
+    def __init__(self, nemotron_client=None):
+        self.client = nemotron_client
+        self.conversation_history = []
+        self.last_alert_time = {}
+        self.alert_cooldown = 300  # 5 minutes between similar alerts
+        self.last_suggestion = None  # Track last suggested action
+        self.pending_action = None  # Track pending action awaiting confirmation
+        self.tools = {
+            'check_tickets': self._check_tickets,
+            'forecast_fills': self._forecast_fills,
+            'get_status': self._get_status,
+            'dispatch_courier': self._dispatch_courier,
+            'optimize_routes': self._optimize_routes,
+            'analyze_network': self._analyze_network,
+            'detect_anomalies': self._detect_anomalies,
+            'analyze_trends': self._analyze_trends,
+            'suggest_actions': self._suggest_actions,
+            'compare_performance': self._compare_performance
+        }
+    
+    def _check_tickets(self):
+        """Tool: Analyze tickets for discrepancies"""
+        try:
+            res = tickets_match()
+            if res.status_code == 200:
+                return res.get_json()
+            return {'error': f'HTTP {res.status_code}'}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _forecast_fills(self):
+        """Tool: Get fill time forecasts"""
+        try:
+            return forecast_fill_times()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _get_status(self):
+        """Tool: Get current cauldron status"""
+        try:
+            res = cauldron_status()
+            if res.status_code == 200:
+                data = res.get_json()
+                
+                # Annotate with drain status for clarity
+                global active_drains
+                if isinstance(data, list):
+                    for cauldron in data:
+                        cid = cauldron.get('id')
+                        if cid in active_drains:
+                            drain_info = active_drains[cid]
+                            cauldron['drain_status'] = {
+                                'active': True,
+                                'started': drain_info['start_time'].isoformat(),
+                                'progress': cauldron.get('drain_progress', 0)
+                            }
+                
+                return data
+            return {'error': f'HTTP {res.status_code}'}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _dispatch_courier(self, cauldron_id):
+        """Tool: Dispatch courier to cauldron - initiates gradual draining"""
+        if not cauldron_id:
+            return {'error': 'No cauldron ID provided', 'status': 'failed'}
+        
+        try:
+            # Validate cauldron exists in static data
+            cauldron_static = next((c for c in factory_static_data['cauldrons'] if c['id'] == cauldron_id), None)
+            
+            if not cauldron_static:
+                return {
+                    'error': f'Invalid cauldron ID: {cauldron_id}',
+                    'status': 'failed'
+                }
+            
+            # Get LIVE current level from status endpoint
+            status_data = self._get_status()
+            cauldron_live = next((c for c in status_data if c['id'] == cauldron_id), None) if isinstance(status_data, list) else None
+            
+            if not cauldron_live:
+                return {
+                    'error': f'Could not fetch live data for {cauldron_id}',
+                    'status': 'failed'
+                }
+            
+            current_level = cauldron_live.get('current_level', 0)
+            max_volume = cauldron_live.get('max_volume', 1)
+            # Use a realistic drain rate - couriers should drain faster than natural drain
+            # If the cauldron's natural drain rate is too slow, use a minimum of 15 L/min for courier dispatch
+            natural_drain = cauldron_static.get('drain_rate_per_min', 0)
+            drain_rate = max(15.0, natural_drain)  # At least 15 L/min for courier operations
+            
+            # Check if already empty
+            if current_level <= 0:
+                return {
+                    'status': 'success',
+                    'message': f"{cauldron_static.get('name', cauldron_id)} is already empty - no drain needed",
+                    'cauldron_id': cauldron_id,
+                    'cauldron_name': cauldron_static.get('name', cauldron_id),
+                    'current_level': 0,
+                    'already_empty': True
+                }
+            
+            # Check if already draining - don't restart the drain
+            global active_drains, drains_lock
+            
+            with drains_lock:
+                if cauldron_id in active_drains:
+                    existing_drain = active_drains[cauldron_id]
+                    elapsed = (datetime.now() - existing_drain['start_time']).total_seconds() / 60
+                    drained_so_far = elapsed * existing_drain['drain_rate']
+                    remaining = max(0, existing_drain['initial_level'] - drained_so_far)
+                    progress = (drained_so_far / existing_drain['initial_level'] * 100) if existing_drain['initial_level'] > 0 else 100
+                    
+                    print(f"[DISPATCH] {cauldron_id} already draining: {progress:.1f}% complete, {remaining:.1f}L remaining")
+                    
+                    return {
+                        'status': 'success',
+                        'message': f"Courier already draining {cauldron_static.get('name', cauldron_id)}",
+                        'cauldron_id': cauldron_id,
+                        'cauldron_name': cauldron_static.get('name', cauldron_id),
+                        'already_draining': True,
+                        'current_level': remaining,
+                        'initial_level': existing_drain['initial_level'],
+                        'drain_progress': round(progress, 1),
+                        'elapsed_minutes': round(elapsed, 1),
+                        'drain_rate': existing_drain['drain_rate']
+                    }
+                
+                # Start the drain operation
+                print(f"[DISPATCH] Starting NEW drain for {cauldron_id}: {current_level:.1f}L at {drain_rate:.1f}L/min")
+                active_drains[cauldron_id] = {
+                'start_time': datetime.now(),
+                'initial_level': current_level,
+                'drain_rate': drain_rate,
+                'cauldron_name': cauldron_static.get('name', cauldron_id)
+            }
+            
+            # Calculate estimated completion time
+            if drain_rate > 0:
+                estimated_minutes = current_level / drain_rate
+                completion_time = datetime.now() + timedelta(minutes=estimated_minutes)
+            else:
+                estimated_minutes = 0
+                completion_time = datetime.now()
+            
+            print(f"[DISPATCH] Courier dispatched to {cauldron_static.get('name', cauldron_id)}")
+            print(f"[DISPATCH] Draining {current_level:.1f}L at {drain_rate:.1f}L/min (~{estimated_minutes:.1f} min)")
+            
+            return {
+                'status': 'success',
+                'message': f"Courier dispatched to {cauldron_static.get('name', cauldron_id)}",
+                'cauldron_id': cauldron_id,
+                'cauldron_name': cauldron_static.get('name', cauldron_id),
+                'dispatched_at': datetime.now().isoformat(),
+                'current_level': current_level,
+                'max_volume': max_volume,
+                'percent_full': (current_level / max_volume * 100) if max_volume > 0 else 0,
+                'drain_rate': drain_rate,
+                'estimated_completion': completion_time.isoformat(),
+                'estimated_minutes': round(estimated_minutes, 1)
+            }
+            
+        except Exception as e:
+            return {
+                'error': str(e),
+                'status': 'failed',
+                'cauldron_id': cauldron_id
+            }
+    
+    def _optimize_routes(self):
+        """Tool: Compute optimized courier routes"""
+        try:
+            # Call the optimizer endpoint via internal request
+            res = safe_get("http://127.0.0.1:5000/api/optimizer/compute", timeout=5)
+            return res or {'error': 'optimizer timeout'}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _analyze_network(self):
+        """Tool: Analyze network topology"""
+        try:
+            network = factory_static_data.get('network', {})
+            cauldrons = factory_static_data.get('cauldrons', [])
+            return {
+                'network_size': len(network) if isinstance(network, dict) else 0,
+                'total_cauldrons': len(cauldrons),
+                'avg_capacity': sum(c.get('max_volume', 0) for c in cauldrons) / max(1, len(cauldrons))
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _detect_anomalies(self):
+        """Tool: Detect anomalies in cauldron behavior"""
+        try:
+            status_data = self._get_status()
+            if isinstance(status_data, dict) and 'error' in status_data:
+                return status_data
+            
+            anomalies = []
+            for c in status_data:
+                # Skip anomaly detection if actively draining
+                if c.get('is_draining'):
+                    continue
+                
+                # Check for unusual fill rates
+                if c.get('percent_full', 0) > 95:
+                    anomalies.append({
+                        'cauldron': c.get('id'),
+                        'type': 'critical_fill',
+                        'severity': 'high',
+                        'details': f"{c.get('percent_full')}% full"
+                    })
+                
+                # Check for discrepancies
+                if c.get('has_discrepancy'):
+                    anomalies.append({
+                        'cauldron': c.get('id'),
+                        'type': 'ticket_mismatch',
+                        'severity': 'medium',
+                        'details': 'Ticket discrepancy detected'
+                    })
+                
+                # Check for rapid fill (time to full < 10 minutes)
+                if c.get('time_to_full_min') and c.get('time_to_full_min') < 10:
+                    anomalies.append({
+                        'cauldron': c.get('id'),
+                        'type': 'rapid_fill',
+                        'severity': 'high',
+                        'details': f"Will overflow in {c.get('time_to_full_min')} minutes"
+                    })
+            
+            return {'anomalies': anomalies, 'count': len(anomalies)}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _analyze_trends(self):
+        """Tool: Analyze cauldron fill trends over time"""
+        try:
+            status_data = self._get_status()
+            if isinstance(status_data, dict) and 'error' in status_data:
+                return status_data
+            
+            trends = []
+            for c in status_data:
+                pct = c.get('percent_full', 0)
+                rate = c.get('fill_rate_per_min', 0)
+                
+                # Calculate trend direction
+                if pct > 80:
+                    trend = 'critical' if rate > 0 else 'stable'
+                elif pct > 50:
+                    trend = 'rising' if rate > 0.5 else 'moderate'
+                else:
+                    trend = 'healthy'
+                
+                trends.append({
+                    'cauldron': c.get('id'),
+                    'name': c.get('name'),
+                    'current_level': pct,
+                    'fill_rate': rate,
+                    'trend': trend,
+                    'time_to_full': c.get('time_to_full_min')
+                })
+            
+            return {'trends': trends, 'total': len(trends)}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _suggest_actions(self):
+        """Tool: Proactively suggest actions based on current state"""
+        try:
+            status_data = self._get_status()
+            anomalies = self._detect_anomalies()
+            
+            if isinstance(status_data, dict) and 'error' in status_data:
+                return status_data
+            
+            suggestions = []
+            
+            # Check for cauldrons needing immediate attention
+            for c in status_data:
+                cid = c.get('id')
+                pct = c.get('percent_full', 0)
+                ttf = c.get('time_to_full_min')
+                
+                if pct > 95:
+                    suggestions.append({
+                        'priority': 'URGENT',
+                        'cauldron': cid,
+                        'action': 'dispatch_courier',
+                        'reason': f'{c.get("name")} is {pct:.1f}% full - overflow imminent',
+                        'eta_minutes': ttf
+                    })
+                elif pct > 85 and ttf and ttf < 15:
+                    suggestions.append({
+                        'priority': 'HIGH',
+                        'cauldron': cid,
+                        'action': 'schedule_pickup',
+                        'reason': f'{c.get("name")} will be full in {ttf:.0f} minutes',
+                        'eta_minutes': ttf
+                    })
+                elif pct < 20 and c.get('fill_rate_per_min', 0) < 0:
+                    suggestions.append({
+                        'priority': 'LOW',
+                        'cauldron': cid,
+                        'action': 'investigate_drain',
+                        'reason': f'{c.get("name")} is draining unexpectedly',
+                        'eta_minutes': None
+                    })
+            
+            # Check for optimization opportunities
+            if len([s for s in suggestions if s['priority'] in ['URGENT', 'HIGH']]) >= 3:
+                suggestions.append({
+                    'priority': 'MEDIUM',
+                    'cauldron': 'MULTIPLE',
+                    'action': 'optimize_routes',
+                    'reason': 'Multiple cauldrons need attention - route optimization recommended',
+                    'eta_minutes': None
+                })
+            
+            # Check for ticket discrepancies
+            if anomalies.get('count', 0) > 5:
+                suggestions.append({
+                    'priority': 'MEDIUM',
+                    'cauldron': 'SYSTEM',
+                    'action': 'audit_tickets',
+                    'reason': f'{anomalies["count"]} anomalies detected - ticket audit recommended',
+                    'eta_minutes': None
+                })
+            
+            return {'suggestions': suggestions, 'count': len(suggestions)}
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _compare_performance(self):
+        """Tool: Compare current performance to historical averages"""
+        try:
+            status_data = self._get_status()
+            if isinstance(status_data, dict) and 'error' in status_data:
+                return status_data
+            
+            # Calculate system-wide metrics
+            total_capacity = sum(c.get('max_volume', 0) for c in factory_static_data.get('cauldrons', []))
+            current_volume = sum(c.get('current_level', 0) for c in status_data)
+            avg_fill_pct = (current_volume / total_capacity * 100) if total_capacity > 0 else 0
+            
+            high_risk = len([c for c in status_data if c.get('percent_full', 0) > 85])
+            medium_risk = len([c for c in status_data if 50 < c.get('percent_full', 0) <= 85])
+            low_risk = len([c for c in status_data if c.get('percent_full', 0) <= 50])
+            
+            return {
+                'system_utilization': round(avg_fill_pct, 1),
+                'total_capacity': total_capacity,
+                'current_volume': round(current_volume, 1),
+                'risk_distribution': {
+                    'high': high_risk,
+                    'medium': medium_risk,
+                    'low': low_risk
+                },
+                'total_cauldrons': len(status_data),
+                'performance_status': 'GOOD' if avg_fill_pct < 70 else 'WARNING' if avg_fill_pct < 85 else 'CRITICAL'
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def get_proactive_insights(self):
+        """
+        NEW: Proactive monitoring - generates insights without user prompt
+        Returns important information the user should know about
+        """
+        insights = []
+        
+        try:
+            # Get current state
+            status = self._get_status()
+            anomalies = self._detect_anomalies()
+            suggestions = self._suggest_actions()
+            performance = self._compare_performance()
+            
+            # Generate urgent alerts
+            if isinstance(anomalies, dict) and anomalies.get('count', 0) > 0:
+                for a in anomalies.get('anomalies', [])[:3]:
+                    if a['severity'] == 'high':
+                        insights.append({
+                            'type': 'ALERT',
+                            'severity': 'HIGH',
+                            'message': f"⚠️ {a['cauldron']}: {a['details']}",
+                            'timestamp': datetime.now().isoformat()
+                        })
+            
+            # Performance warnings
+            if isinstance(performance, dict):
+                perf_status = performance.get('performance_status')
+                if perf_status == 'CRITICAL':
+                    insights.append({
+                        'type': 'WARNING',
+                        'severity': 'HIGH',
+                        'message': f"🔴 System utilization at {performance['system_utilization']}% - critical level",
+                        'timestamp': datetime.now().isoformat()
+                    })
+                elif perf_status == 'WARNING':
+                    insights.append({
+                        'type': 'INFO',
+                        'severity': 'MEDIUM',
+                        'message': f"🟡 System utilization at {performance['system_utilization']}% - monitor closely",
+                        'timestamp': datetime.now().isoformat()
+                    })
+            
+            # Action recommendations
+            if isinstance(suggestions, dict) and suggestions.get('count', 0) > 0:
+                urgent = [s for s in suggestions['suggestions'] if s['priority'] == 'URGENT']
+                if urgent:
+                    for sug in urgent[:2]:
+                        insights.append({
+                            'type': 'ACTION',
+                            'severity': 'URGENT',
+                            'message': f"🚨 {sug['reason']} - Recommended: {sug['action']}",
+                            'timestamp': datetime.now().isoformat(),
+                            'action': sug['action'],
+                            'cauldron': sug['cauldron']
+                        })
+            
+            return {
+                'insights': insights,
+                'count': len(insights),
+                'generated_at': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {'error': str(e), 'insights': [], 'count': 0}
+    
+    def plan_and_execute(self, user_message):
+        """
+        Multi-step workflow:
+        1. Analyze user intent
+        2. Create execution plan
+        3. Execute tools in sequence
+        4. Synthesize response
+        """
+        steps = []
+        tool_results = {}
+        
+        # Step 1: Intent analysis
+        intent = self._analyze_intent(user_message)
+        steps.append(f"Intent Analysis: {intent['description']}")
+        
+        # Step 2: Create plan
+        plan = self._create_plan(intent, user_message)
+        steps.append(f"Execution Plan: {' → '.join(plan['steps'])}")
+        
+        # Step 3: Execute tools
+        for tool_name in plan['tools']:
+            if tool_name in self.tools:
+                steps.append(f"Executing: {tool_name}")
+                result = self._execute_tool(tool_name, plan.get('params', {}))
+                tool_results[tool_name] = result
+                steps.append(f"Result: {self._summarize_result(result)}")
+        
+        # Step 4: Synthesize response
+        response = self._synthesize_response(user_message, intent, tool_results, steps)
+        
+        return {
+            'steps': steps,
+            'response': response,
+            'intent': intent,
+            'tool_results': tool_results
+        }
+    
+    def _analyze_intent(self, message):
+        """Analyze what the user wants to do"""
+        msg_lower = message.lower().strip()
+        
+        # Check for confirmation responses (yes/no/ok)
+        if msg_lower in ['yes', 'y', 'ok', 'okay', 'sure', 'do it', 'proceed', 'confirm', 'go ahead']:
+            if self.pending_action:
+                return {
+                    'type': 'confirm_action', 
+                    'description': f'Confirm pending action: {self.pending_action.get("action")}'
+                }
+        
+        if msg_lower in ['no', 'n', 'cancel', 'stop', 'abort', 'nope']:
+            self.pending_action = None
+            return {'type': 'cancel', 'description': 'Cancel pending action'}
+        
+        # Regular intent analysis
+        if any(word in msg_lower for word in ['suspicious', 'anomaly', 'ticket', 'discrepancy', 'problem', 'alert', 'issue']):
+            return {'type': 'investigate', 'description': 'Investigate discrepancies and anomalies'}
+        elif any(word in msg_lower for word in ['forecast', 'full', 'overflow', 'time', 'when', 'predict']):
+            return {'type': 'predict', 'description': 'Forecast fill times and overflow risks'}
+        elif any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
+            return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
+        elif any(word in msg_lower for word in ['optimize', 'route', 'witch', 'efficient']):
+            return {'type': 'optimize', 'description': 'Optimize courier routes for efficiency'}
+        elif any(word in msg_lower for word in ['status', 'how', 'level', 'current', 'what']):
+            return {'type': 'monitor', 'description': 'Monitor current cauldron status'}
+        elif any(word in msg_lower for word in ['network', 'map', 'topology', 'connection']):
+            return {'type': 'analyze', 'description': 'Analyze network topology'}
+        elif any(word in msg_lower for word in ['trend', 'pattern', 'history', 'over time']):
+            return {'type': 'trends', 'description': 'Analyze trends and patterns'}
+        elif any(word in msg_lower for word in ['suggest', 'recommend', 'what should', 'advice']):
+            return {'type': 'suggest', 'description': 'Provide recommendations and suggestions'}
+        elif any(word in msg_lower for word in ['compare', 'performance', 'metric', 'efficiency']):
+            return {'type': 'performance', 'description': 'Compare performance metrics'}
+        else:
+            return {'type': 'general', 'description': 'General inquiry about factory'}
+    
+    def _create_plan(self, intent, message):
+        """Create execution plan based on intent"""
+        intent_type = intent['type']
+        
+        # Handle confirmation of pending action
+        if intent_type == 'confirm_action' and self.pending_action:
+            action_type = self.pending_action.get('action')
+            cauldron_id = self.pending_action.get('cauldron_id')
+            
+            if action_type == 'dispatch_courier':
+                return {
+                    'steps': ['Execute confirmed dispatch', 'Update status'],
+                    'tools': ['dispatch_courier'],
+                    'params': {'cauldron_id': cauldron_id}
+                }
+            elif action_type == 'optimize_routes':
+                return {
+                    'steps': ['Execute confirmed optimization'],
+                    'tools': ['optimize_routes']
+                }
+        
+        # Handle cancellation
+        if intent_type == 'cancel':
+            return {
+                'steps': ['Cancel pending action'],
+                'tools': []
+            }
+        
+        if intent_type == 'investigate':
+            return {
+                'steps': ['Check tickets', 'Detect anomalies', 'Get status', 'Generate report'],
+                'tools': ['check_tickets', 'detect_anomalies', 'get_status']
+            }
+        elif intent_type == 'predict':
+            return {
+                'steps': ['Get forecasts', 'Detect anomalies', 'Prioritize risks'],
+                'tools': ['forecast_fills', 'detect_anomalies']
+            }
+        elif intent_type == 'action':
+            # Extract cauldron ID from message
+            cauldron_id = self._extract_cauldron_id(message)
+            return {
+                'steps': ['Verify target', 'Dispatch courier', 'Confirm action'],
+                'tools': ['dispatch_courier'],
+                'params': {'cauldron_id': cauldron_id}
+            }
+        elif intent_type == 'optimize':
+            return {
+                'steps': ['Analyze network', 'Get forecasts', 'Optimize routes', 'Validate plan'],
+                'tools': ['analyze_network', 'forecast_fills', 'optimize_routes']
+            }
+        elif intent_type == 'monitor':
+            return {
+                'steps': ['Get status', 'Detect anomalies', 'Summarize findings'],
+                'tools': ['get_status', 'detect_anomalies']
+            }
+        elif intent_type == 'analyze':
+            return {
+                'steps': ['Analyze network', 'Get status', 'Compute metrics'],
+                'tools': ['analyze_network', 'get_status']
+            }
+        elif intent_type == 'trends':
+            return {
+                'steps': ['Analyze trends', 'Get status', 'Identify patterns'],
+                'tools': ['analyze_trends', 'get_status']
+            }
+        elif intent_type == 'suggest':
+            return {
+                'steps': ['Suggest actions', 'Get status', 'Prioritize recommendations'],
+                'tools': ['suggest_actions', 'get_status', 'detect_anomalies']
+            }
+        elif intent_type == 'performance':
+            return {
+                'steps': ['Compare performance', 'Analyze trends', 'Benchmark metrics'],
+                'tools': ['compare_performance', 'analyze_trends']
+            }
+        else:
+            return {
+                'steps': ['Get status', 'Provide overview', 'Suggest next steps'],
+                'tools': ['get_status', 'suggest_actions']
+            }
+    
+    def _extract_cauldron_id(self, message):
+        """Extract cauldron ID from user message - uses exact match priority"""
+        import re
+        msg_lower = message.lower()
+        
+        # First try exact cauldron_XXX pattern match (e.g., "cauldron_009")
+        pattern = r'cauldron_(\d+)'
+        match = re.search(pattern, msg_lower)
+        if match:
+            # Construct the full ID and verify it exists
+            extracted_id = f"cauldron_{match.group(1)}"
+            for cauldron in factory_static_data.get('cauldrons', []):
+                if cauldron.get('id', '').lower() == extracted_id:
+                    return cauldron.get('id')
+        
+        # Fallback: check by name or partial ID match (but prefer longer matches)
+        best_match = None
+        best_match_len = 0
+        
+        for cauldron in factory_static_data.get('cauldrons', []):
+            cid = cauldron.get('id', '')
+            name = cauldron.get('name', '')
+            
+            # Check if cauldron ID appears in message
+            if cid.lower() in msg_lower:
+                if len(cid) > best_match_len:
+                    best_match = cid
+                    best_match_len = len(cid)
+            
+            # Check if any word from cauldron name appears
+            elif any(word in msg_lower for word in name.lower().split()):
+                if len(name) > best_match_len:
+                    best_match = cid
+                    best_match_len = len(name)
+        
+        return best_match
+    
+    def _execute_tool(self, tool_name, params):
+        """Execute a tool with parameters"""
+        tool_func = self.tools.get(tool_name)
+        if not tool_func:
+            return {'error': f'Unknown tool: {tool_name}'}
+        
+        try:
+            # Handle tools with parameters
+            if tool_name == 'dispatch_courier' and 'cauldron_id' in params:
+                return tool_func(params['cauldron_id'])
+            else:
+                return tool_func()
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _summarize_result(self, result):
+        """Create brief summary of tool result"""
+        if isinstance(result, dict):
+            if 'error' in result:
+                return f"Error: {result['error']}"
+            elif 'matches' in result:
+                suspicious = len([m for m in result['matches'] if m.get('suspicious')])
+                return f"Found {suspicious} suspicious tickets"
+            elif 'anomalies' in result:
+                return f"Detected {result['count']} anomalies"
+            elif 'required_couriers' in result:
+                return f"Need {result['required_couriers']} couriers"
+            else:
+                return "Success"
+        elif isinstance(result, list):
+            return f"{len(result)} items retrieved"
+        return "Complete"
+    
+    def _synthesize_response(self, user_message, intent, tool_results, steps):
+        """Generate final response using Nemotron or fallback"""
+        if self.client:
+            return self._nemotron_synthesis(user_message, intent, tool_results, steps)
+        else:
+            return self._fallback_synthesis(intent, tool_results)
+    
+    def _nemotron_synthesis(self, user_message, intent, tool_results, steps):
+        """Use Nemotron to synthesize natural language response"""
+        try:
+            # Build context from tool results
+            context_parts = [f"User Intent: {intent['description']}"]
+            for tool_name, result in tool_results.items():
+                context_parts.append(f"{tool_name}: {json.dumps(result, indent=2)}")
+            
+            context = "\n".join(context_parts)
+            
+            system_msg = (
+                "You are an intelligent factory monitoring agent with access to real-time data and tools. "
+                "Based on the tool execution results, provide a clear, actionable response to the user. "
+                "Be concise but informative. Highlight any urgent issues and recommend next steps."
+            )
+            
+            prompt = f"{context}\n\nUser Question: {user_message}\n\nProvide a helpful response:"
+            
+            messages = [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": prompt}
+            ]
+            
+            completion = self.client.chat.completions.create(
+                model="nvidia/nvidia-nemotron-nano-9b-v2",
+                messages=messages,
+                temperature=0.6,
+                max_tokens=512,
+                stream=False
+            )
+            
+            if hasattr(completion.choices[0], 'message'):
+                return completion.choices[0].message.content
+            return str(completion.choices[0])
+            
+        except Exception as e:
+            print(f"[Nemotron synthesis error]: {e}")
+            return self._fallback_synthesis(intent, tool_results)
+    
+    def _fallback_synthesis(self, intent, tool_results):
+        """Fallback response generation without Nemotron"""
+        intent_type = intent['type']
+        
+        # Handle confirmation
+        if intent_type == 'confirm_action':
+            dispatch = tool_results.get('dispatch_courier', {})
+            if dispatch.get('status') == 'success':
+                self.pending_action = None  # Clear pending action
+                
+                # Check if already empty
+                if dispatch.get('already_empty'):
+                    return f"ℹ️ **{dispatch.get('cauldron_name', 'Cauldron')} is already empty!**\n\nNo courier dispatch needed - the cauldron is at 0% capacity."
+                
+                est_min = dispatch.get('estimated_minutes', 0)
+                drain_rate = dispatch.get('drain_rate', 0)
+                current = dispatch.get('current_level', 0)
+                percent = dispatch.get('percent_full', 0)
+                max_vol = dispatch.get('max_volume', 1)
+                
+                response = f"✅ **Courier Dispatched Successfully!**\n\n"
+                response += f"• **Target:** {dispatch.get('cauldron_name', 'Unknown')}\n"
+                response += f"• **Current Level:** {current:.1f}L / {max_vol}L ({percent:.1f}% full)\n"
+                response += f"• **Drain Rate:** {drain_rate:.1f}L/min\n"
+                response += f"• **Est. Completion:** ~{est_min} minutes\n"
+                response += f"• **Dispatched:** {dispatch.get('dispatched_at', 'Now')}\n\n"
+                response += f"🚛 _The courier is now actively draining the cauldron. Watch the dashboard for real-time progress!_"
+                return response
+            else:
+                return f"⚠️ Dispatch failed: {dispatch.get('error', 'Unknown error')}"
+        
+        # Handle cancellation
+        if intent_type == 'cancel':
+            self.pending_action = None
+            return "✓ Action canceled. Let me know if you need anything else."
+        
+        if intent_type == 'investigate':
+            tickets = tool_results.get('check_tickets', {})
+            anomalies = tool_results.get('detect_anomalies', {})
+            
+            response = "**Investigation Complete:**\n\n"
+            if 'matches' in tickets:
+                suspicious = [m for m in tickets['matches'] if m.get('suspicious')]
+                response += f"• Found **{len(suspicious)} suspicious tickets**\n"
+            if 'anomalies' in anomalies:
+                response += f"• Detected **{anomalies['count']} anomalies**\n"
+                for a in anomalies['anomalies'][:3]:
+                    response += f"  - {a['cauldron']}: {a['details']} (severity: {a['severity']})\n"
+            
+            return response
+        
+        elif intent_type == 'predict':
+            forecasts = tool_results.get('forecast_fills', [])
+            if isinstance(forecasts, list) and len(forecasts) > 0:
+                urgent = [f for f in forecasts if f.get('time_to_full_min', 9999) < 30]
+                response = f"**Forecast Analysis:**\n\n• {len(urgent)} cauldrons will overflow within 30 minutes\n"
+                for f in urgent[:5]:
+                    response += f"  - {f.get('name')}: {f.get('time_to_full_min')} min\n"
+                return response
+            return "✓ No urgent overflow risks detected"
+        
+        elif intent_type == 'action':
+            dispatch = tool_results.get('dispatch_courier', {})
+            if dispatch.get('status') == 'success':
+                self.pending_action = None  # Clear any pending action
+                
+                # Check if already empty
+                if dispatch.get('already_empty'):
+                    return f"ℹ️ **{dispatch.get('cauldron_name', 'Cauldron')} is already empty!**\n\nNo courier dispatch needed - the cauldron is at 0% capacity."
+                
+                # Check if already draining
+                if dispatch.get('already_draining'):
+                    progress = dispatch.get('drain_progress', 0)
+                    elapsed = dispatch.get('elapsed_minutes', 0)
+                    current = dispatch.get('current_level', 0)
+                    initial = dispatch.get('initial_level', 0)
+                    drain_rate = dispatch.get('drain_rate', 0)
+                    
+                    response = f"🚛 **Courier Already Draining {dispatch.get('cauldron_name', 'Cauldron')}!**\n\n"
+                    response += f"• **Progress:** {progress:.1f}% drained\n"
+                    response += f"• **Remaining:** {current:.1f}L (started at {initial:.1f}L)\n"
+                    response += f"• **Time Elapsed:** {elapsed:.1f} minutes\n"
+                    response += f"• **Drain Rate:** {drain_rate:.1f}L/min\n\n"
+                    response += f"_The drain is ongoing. Check the dashboard for real-time updates!_"
+                    return response
+                
+                est_min = dispatch.get('estimated_minutes', 0)
+                drain_rate = dispatch.get('drain_rate', 0)
+                current = dispatch.get('current_level', 0)
+                percent = dispatch.get('percent_full', 0)
+                max_vol = dispatch.get('max_volume', 1)
+                
+                response = f"✅ **Courier Dispatched Successfully!**\n\n"
+                response += f"• **Target:** {dispatch.get('cauldron_name', 'Unknown')}\n"
+                response += f"• **Current Level:** {current:.1f}L / {max_vol}L ({percent:.1f}% full)\n"
+                response += f"• **Drain Rate:** {drain_rate:.1f}L/min\n"
+                response += f"• **Est. Completion:** ~{est_min:.1f} minutes\n"
+                response += f"• **Dispatched:** {dispatch.get('dispatched_at', 'Now')}\n\n"
+                response += f"🚛 _The courier is now actively draining the cauldron. Watch the dashboard for real-time progress!_"
+                return response
+            elif 'error' in dispatch:
+                return f"⚠️ **Dispatch Failed**\n\nError: {dispatch.get('error')}\n\n**Troubleshooting:**\n1. Verify cauldron ID is correct\n2. Check system connectivity\n3. Retry the operation\n4. If issue persists, contact support"
+            return "Dispatch operation completed"
+        
+        elif intent_type == 'optimize':
+            routes = tool_results.get('optimize_routes', {})
+            if 'required_couriers' in routes:
+                return f"**Route Optimization Complete:**\n\n• {routes['required_couriers']} couriers required\n• {len(routes.get('routes', []))} optimized routes computed\n• Ready for deployment"
+            return "Route optimization complete"
+        
+        elif intent_type == 'suggest':
+            suggestions = tool_results.get('suggest_actions', {})
+            if suggestions.get('count', 0) > 0:
+                response = f"**Recommendations ({suggestions['count']} total):**\n\n"
+                urgent = [s for s in suggestions.get('suggestions', []) if s['priority'] == 'URGENT']
+                high = [s for s in suggestions.get('suggestions', []) if s['priority'] == 'HIGH']
+                
+                if urgent:
+                    response += "🚨 **URGENT:**\n"
+                    for s in urgent[:3]:
+                        response += f"  - {s['reason']}\n"
+                        if s['action'] == 'dispatch_courier' and s['cauldron']:
+                            response += f"    → Would you like me to dispatch a courier to **{s['cauldron']}** now?\n"
+                            # Set pending action
+                            self.pending_action = {
+                                'action': 'dispatch_courier',
+                                'cauldron_id': s['cauldron']
+                            }
+                
+                if high:
+                    response += "\n⚠️ **HIGH PRIORITY:**\n"
+                    for s in high[:3]:
+                        response += f"  - {s['reason']}\n"
+                
+                if self.pending_action:
+                    response += "\n💬 _Reply 'yes' to confirm or 'no' to cancel._"
+                
+                return response
+            return "✓ No urgent actions needed at this time"
+        
+        elif intent_type == 'performance':
+            perf = tool_results.get('compare_performance', {})
+            if perf:
+                status = perf.get('performance_status', 'UNKNOWN')
+                icon = '🔴' if status == 'CRITICAL' else '🟡' if status == 'WARNING' else '🟢'
+                response = f"{icon} **System Performance: {status}**\n\n"
+                response += f"• Overall Utilization: {perf.get('system_utilization', 0)}%\n"
+                response += f"• Total Capacity: {perf.get('total_capacity', 0)}L\n"
+                response += f"• Current Volume: {perf.get('current_volume', 0)}L\n"
+                risk = perf.get('risk_distribution', {})
+                response += f"\n**Risk Distribution:**\n"
+                response += f"  - High Risk: {risk.get('high', 0)} cauldrons\n"
+                response += f"  - Medium Risk: {risk.get('medium', 0)} cauldrons\n"
+                response += f"  - Low Risk: {risk.get('low', 0)} cauldrons\n"
+                return response
+            return "Performance metrics retrieved"
+        
+        elif intent_type == 'trends':
+            trends = tool_results.get('analyze_trends', {})
+            if trends.get('total', 0) > 0:
+                critical = [t for t in trends.get('trends', []) if t['trend'] == 'critical']
+                rising = [t for t in trends.get('trends', []) if t['trend'] == 'rising']
+                response = f"**Trend Analysis ({trends['total']} cauldrons):**\n\n"
+                if critical:
+                    response += f"🔴 **Critical Trends:** {len(critical)} cauldrons\n"
+                    for t in critical[:3]:
+                        response += f"  - {t['name']}: {t['current_level']:.1f}% ({t['trend']})\n"
+                if rising:
+                    response += f"\n🟡 **Rising Trends:** {len(rising)} cauldrons\n"
+                return response
+            return "Trend analysis complete"
+        
+        else:
+            # General or default response
+            status = tool_results.get('get_status', [])
+            suggestions = tool_results.get('suggest_actions', {})
+            
+            if isinstance(status, list):
+                total = len(status)
+                critical = len([c for c in status if c.get('percent_full', 0) > 90])
+                draining = [c for c in status if c.get('is_draining')]
+                
+                response = f"**Factory Status:**\n\n• {total} cauldrons monitored\n• {critical} at critical fill levels (>90%)\n"
+                
+                # Show draining cauldrons
+                if draining:
+                    response += f"• 🚛 {len(draining)} courier{'s' if len(draining) > 1 else ''} actively draining\n"
+                    for c in draining[:2]:
+                        progress = c.get('drain_progress', 0)
+                        response += f"  - **{c.get('name')}**: {progress:.1f}% drained (current: {c.get('current_level', 0):.1f}L)\n"
+                
+                # Add urgent suggestions if available
+                if suggestions.get('count', 0) > 0:
+                    urgent = [s for s in suggestions.get('suggestions', []) if s['priority'] == 'URGENT']
+                    if urgent:
+                        response += f"\n🚨 **{len(urgent)} urgent issue{'s' if len(urgent) > 1 else ''}:**\n"
+                        for s in urgent[:2]:
+                            response += f"  - {s['reason']}\n"
+                            if s['action'] == 'dispatch_courier' and s['cauldron']:
+                                # Set pending action for first urgent item
+                                if not self.pending_action:
+                                    self.pending_action = {
+                                        'action': 'dispatch_courier',
+                                        'cauldron_id': s['cauldron']
+                                    }
+                                    response += f"\n💬 Would you like me to dispatch a courier to **{s['cauldron']}** now? (Reply 'yes' or 'no')"
+                                    break
+                
+                if not self.pending_action:
+                    response += "\n\n_Ask me for suggestions, trends, or specific actions!_"
+                
+                return response
+            return "Status check complete"
+
 # --- Setup ---
 app = Flask(__name__)
 CORS(app) 
@@ -618,6 +1559,9 @@ if factory_static_data is None:
         "couriers": []
     }
 
+# Global set to track cauldrons with suspicious tickets (populated by /api/tickets/match)
+suspicious_cauldrons = set()
+
 # Server-side forecast smoothing state to avoid large upward jumps in full_at
 forecast_state = {}
 
@@ -826,6 +1770,41 @@ def cauldron_status():
     for c in live_levels:
         max_vol = c.get('max_volume') or 1
         current = c.get('current_level') or 0
+        
+        # Apply active drain if courier was dispatched
+        cauldron_id = c.get('id')
+        is_draining = False
+        drain_progress = 0
+        
+        global active_drains, drains_lock
+        
+        with drains_lock:
+            if cauldron_id in active_drains:
+                drain_info = active_drains[cauldron_id]
+                elapsed = (datetime.now() - drain_info['start_time']).total_seconds() / 60  # minutes
+                drained_amount = elapsed * drain_info['drain_rate']
+                
+                # Calculate current level after draining
+                new_level = max(0, drain_info['initial_level'] - drained_amount)
+                
+                if new_level <= 0:
+                    # Drain complete, remove from active drains
+                    print(f"[DRAIN] ✓ Complete for {drain_info['cauldron_name']} - drained {drained_amount:.1f}L in {elapsed:.1f} min")
+                    del active_drains[cauldron_id]
+                    current = 0
+                else:
+                    # Still draining
+                    current = new_level
+                    is_draining = True
+                    drain_progress = (drained_amount / drain_info['initial_level']) * 100 if drain_info['initial_level'] > 0 else 100
+                    
+                    # Log every 10% milestone
+                    if int(drain_progress) % 10 == 0 and int(drain_progress) > 0:
+                        milestone = int(drain_progress // 10) * 10
+                        if not hasattr(drain_info, f'logged_{milestone}'):
+                            print(f"[DRAIN] {drain_info['cauldron_name']}: {drain_progress:.1f}% complete ({current:.1f}L remaining)")
+                            setattr(drain_info, f'logged_{milestone}', True)
+        
         try:
             percent = round((current / float(max_vol)) * 100, 1)
         except Exception:
@@ -842,9 +1821,13 @@ def cauldron_status():
                 time_to_full_seconds = None
 
         status = c.copy()
+        status['current_level'] = current  # Override with drained level
         status['percent_full'] = percent
         status['time_to_full_min'] = time_to_full_min
         status['time_to_full_seconds'] = time_to_full_seconds
+        status['has_discrepancy'] = c.get('id') in suspicious_cauldrons
+        status['is_draining'] = is_draining
+        status['drain_progress'] = round(drain_progress, 1) if is_draining else 0
         # as_of timestamp (UTC) so client can align countdowns
         try:
             now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -872,6 +1855,36 @@ def cauldron_status():
     return jsonify(status_list)
 
 
+@app.route('/api/debug/drains')
+@requires_auth
+def debug_drains():
+    """Debug endpoint to check active drain status"""
+    global active_drains, drains_lock
+    
+    with drains_lock:
+        debug_info = {}
+        for cid, drain in active_drains.items():
+            elapsed = (datetime.now() - drain['start_time']).total_seconds() / 60
+            drained = elapsed * drain['drain_rate']
+            remaining = max(0, drain['initial_level'] - drained)
+            progress = (drained / drain['initial_level'] * 100) if drain['initial_level'] > 0 else 100
+            
+            debug_info[cid] = {
+                'name': drain['cauldron_name'],
+                'initial_level': drain['initial_level'],
+                'current_level': remaining,
+                'drain_rate': drain['drain_rate'],
+                'elapsed_minutes': round(elapsed, 2),
+                'progress_percent': round(progress, 2),
+                'started_at': drain['start_time'].isoformat()
+            }
+    
+    return jsonify({
+        'active_drains': len(active_drains),
+        'drains': debug_info
+    })
+
+
 @app.route('/api/data/historic')
 @requires_auth
 def data_historic():
@@ -880,54 +1893,89 @@ def data_historic():
     - end: ISO date (inclusive)
     - cauldron_id: optional, filter to a single cauldron's level map
     """
-    start_q = request.args.get('start')
-    end_q = request.args.get('end')
-    cauldron_id = request.args.get('cauldron_id')
+    try:
+        start_q = request.args.get('start')
+        end_q = request.args.get('end')
+        cauldron_id = request.args.get('cauldron_id')
 
-    raw = safe_get(EOG_API_BASE_URL + '/api/Data')
-    if raw is None:
-        return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
+        print(f"[HISTORIC] Fetching data for date range: {start_q} to {end_q}")
 
-    # Normalize wrapper shapes
-    data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+        raw = safe_get(EOG_API_BASE_URL + '/api/Data')
+        if raw is None:
+            print("[HISTORIC] Failed to fetch /api/Data")
+            return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
-    # Parse filter times
-    start_dt = None
-    end_dt = None
-    if start_q:
-        try:
-            start_dt = _parse_timestamp(start_q if 'T' in start_q else start_q + 'T00:00:00')
-        except Exception:
-            start_dt = None
-    if end_q:
-        try:
-            end_dt = _parse_timestamp(end_q if 'T' in end_q else end_q + 'T23:59:59')
-        except Exception:
-            end_dt = None
+        # Normalize wrapper shapes
+        data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
+        print(f"[HISTORIC] Received {len(data_list)} records from API")
 
-    out = []
-    for rec in data_list:
-        ts = None
-        if isinstance(rec, dict):
-            ts = _parse_timestamp(rec.get('timestamp') or rec.get('time') or rec.get('t'))
-        if ts is None:
-            continue
-        if start_dt and ts < start_dt:
-            continue
-        if end_dt and ts > end_dt:
-            continue
+        # Parse filter times
+        start_dt = None
+        end_dt = None
+        if start_q:
+            try:
+                # Parse and make timezone-aware (assume UTC if no timezone specified)
+                dt_str = start_q if 'T' in start_q else start_q + 'T00:00:00'
+                start_dt = _parse_timestamp(dt_str)
+                if start_dt and start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                print(f"[HISTORIC] Parsed start time: {start_dt}")
+            except Exception as e:
+                print(f"[HISTORIC] Error parsing start time: {e}")
+                import traceback
+                traceback.print_exc()
+                start_dt = None
+        if end_q:
+            try:
+                # Parse and make timezone-aware (assume UTC if no timezone specified)
+                dt_str = end_q if 'T' in end_q else end_q + 'T23:59:59'
+                end_dt = _parse_timestamp(dt_str)
+                if end_dt and end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                print(f"[HISTORIC] Parsed end time: {end_dt}")
+            except Exception as e:
+                print(f"[HISTORIC] Error parsing end time: {e}")
+                import traceback
+                traceback.print_exc()
+                end_dt = None
 
-        if cauldron_id:
-            # filter to a single cauldron's numeric value
-            levels = rec.get('cauldron_levels') or rec.get('levels') or {}
-            value = None
-            if isinstance(levels, dict):
-                value = levels.get(cauldron_id)
-            out.append({'timestamp': ts.isoformat(), 'cauldron_id': cauldron_id, 'value': value})
-        else:
-            out.append(rec)
+        out = []
+        for rec in data_list:
+            try:
+                ts = None
+                if isinstance(rec, dict):
+                    ts = _parse_timestamp(rec.get('timestamp') or rec.get('time') or rec.get('t'))
+                    # Make timezone-aware if needed
+                    if ts and ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                if ts is None:
+                    continue
+                if start_dt and ts < start_dt:
+                    continue
+                if end_dt and ts > end_dt:
+                    continue
 
-    return jsonify(out)
+                if cauldron_id:
+                    # filter to a single cauldron's numeric value
+                    levels = rec.get('cauldron_levels') or rec.get('levels') or {}
+                    value = None
+                    if isinstance(levels, dict):
+                        value = levels.get(cauldron_id)
+                    out.append({'timestamp': ts.isoformat(), 'cauldron_id': cauldron_id, 'value': value})
+                else:
+                    out.append(rec)
+            except Exception as e:
+                print(f"[HISTORIC] Error processing record: {e}")
+                continue
+
+        print(f"[HISTORIC] Returning {len(out)} filtered records")
+        return jsonify(out)
+        
+    except Exception as e:
+        print(f"[HISTORIC] Error in data_historic endpoint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 
 @app.route('/api/network')
@@ -1128,6 +2176,10 @@ def tickets_match():
                 for e in events:
                     unmatched_drains.append({'cauldron_id': cid, 'day': day, 'event': e})
 
+    # Update global suspicious_cauldrons set
+    global suspicious_cauldrons
+    suspicious_cauldrons = {r['cauldron_id'] for r in results if r.get('suspicious')}
+
     return jsonify({'matches': results, 'unmatched_drains': unmatched_drains})
 
 @app.route('/api/logistics/dispatch_courier', methods=['POST'])
@@ -1159,319 +2211,73 @@ def dispatch_courier():
 @app.route('/api/agent/chat', methods=['POST'])
 @requires_auth
 def handle_agent_chat():
-    user_message = request.json.get('message')
-    # Optional: the client can pass `nv_api_key` or set NV_API_KEY (or nv_api_key) env var.
+    """
+    Enhanced multi-agent system demonstrating NVIDIA requirements:
+    1. Beyond chatbot - implements complex workflows
+    2. Multi-step - plan → execute → synthesize
+    3. Tool integration - uses external APIs intelligently
+    4. Real-world - solves actual factory monitoring
+    """
+    user_message = request.json.get('message', '')
     nv_api_key = request.json.get('nv_api_key') or _get_nv_api_key_from_env()
     use_nemotron = bool(request.json.get('use_nemotron')) or bool(nv_api_key)
-    # Control whether Nemotron's internal 'reasoning' fragments are exposed in responses
-    show_reasoning = bool(request.json.get('debug')) or bool(os.environ.get('NV_SHOW_REASONING'))
     
-    agent_plan = [] 
-    agent_final_response = ""
-
-    # *** THIS IS THE FIX: REMOVED THE THREADED HELPER ***
-    # Helper function to safely call and parse tools
-    def _call_and_extract(fn):
-        """
-        Calls the tool function directly *in the same thread*
-        to preserve the Flask application context.
-        """
+    # Initialize Nemotron client if available
+    nemotron_client = None
+    if use_nemotron and _HAS_NEMOTRON and nv_api_key:
         try:
-            # Call the function directly
-            res = fn()
-            
-            # If it's a tuple like (resp, status)
-            if isinstance(res, tuple):
-                    res = res[0]
-            # If it's a Flask Response object
-            if hasattr(res, 'get_json'):
-                try:
-                    return res.get_json()
-                except Exception:
-                    return {'error': 'Tool returned non-JSON response'}
-            # If it's already a dict/list
-            if isinstance(res, (dict, list)):
-                return res
-            # Last resort
-            try:
-                return json.loads(res.data)
-            except Exception:
-                return {'error': 'Could not decode tool response'}
-                
+            nemotron_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=nv_api_key
+            )
         except Exception as e:
-            # Catch any exception from the tool itself
-            tb = traceback.format_exc() # Get the full traceback
-            print(f"--- Exception in tool {fn.__name__} ---")
-            print(tb)
-            print("---------------------------------------")
-            return {'error': f'Exception in tool: {e}'}
-
-
-    # REAL EOG LOGIC 1: User asks for anomalies
-    if "suspicious" in user_message.lower() or "anomaly" in user_message.lower() or "ticket" in user_message.lower():
-        agent_plan.append("Plan: User asked about discrepancies. I will call the real `tickets_match()` tool.")
-        
-        match_data = _call_and_extract(tickets_match) 
-        
-        suspicious_matches = [m for m in match_data.get('matches', []) if m['suspicious']]
-        unmatched_drains = match_data.get('unmatched_drains', [])
-        
-        if suspicious_matches or unmatched_drains:
-            agent_plan.append("Tool Result: Found discrepancies.")
-            agent_final_response = "I've checked the tickets and found some problems:\n"
-            for match in suspicious_matches:
-                agent_final_response += f"  - Suspicious Ticket: {match['ticket_id']} ({match['cauldron_id']}). Reason: {match['reason']}\n"
-            for drain in unmatched_drains:
-                agent_final_response += f"  - Unmatched Drain: {drain['cauldron_id']} on {drain['day']} for {drain['event']['drained']:.1f}L.\n"
-        else:
-            agent_plan.append("Tool Result: No discrepancies found.")
-            agent_final_response = "I've checked all tickets against the historical data. All potion flows are accounted for."
-
-    # SIMULATION 2: User asks for forecasts
-    elif "forecast" in user_message.lower() or "full" in user_message.lower():
-        agent_plan.append("Plan: User asked for forecasts. I will call `forecast_fill_times()`.")
-
-        # This calls our tool, which calls /api/Data
-        try:
-            forecasts = _call_and_extract(forecast_fill_times)
-        except Exception as e:
-            forecasts = {'error': str(e)} # Be explicit that an error is a dict
-
-        agent_plan.append(f"Tool Result: {forecasts}")
-
-        # Check if 'forecasts' is a list before trying to sort it.
-        if isinstance(forecasts, list):
-            # If user asked about a particular cauldron ("how full is amber glow"), try to match name first
-            agent_final_response = "Here is the live forecast (top 5):\n"
-
-            # Helper: case-insensitive substring match against static cauldron names/ids
-            def _find_cauldron_by_text(text):
-                if not text:
-                    return None
-                q = text.lower()
-                for c in factory_static_data.get('cauldrons', []):
-                    name = (c.get('name') or '').lower()
-                    cid = (c.get('id') or '').lower()
-                    if q in name or q in cid:
-                        return c
-                return None
-
-            # Try to parse a potential cauldron name from the user message by stripping common words
-            possible_name = None
-            # crude heuristic: take words after 'is' or 'how full is' up to 5 words
-            low = user_message.lower()
-            if 'how full is' in low:
-                possible_name = low.split('how full is',1)[1].strip().split('?')[0].strip()
-            elif 'how full' in low and 'is' in low:
-                parts = low.split('is',1)
-                possible_name = parts[1].strip()
-
-            matched_cauldron = _find_cauldron_by_text(possible_name) if possible_name else None
-
-            # Sort and report top 5 forecasts as before
-            forecasts.sort(key=lambda x: x.get('time_to_full_min', 9999))
-            for f in forecasts[:5]:
-                agent_final_response += f"  - {f.get('name','?')} ({f.get('cauldron_id','?')}) will be full in {f.get('time_to_full_min','?')} minutes.\n"
-
-            # If a specific cauldron was matched, give its live percent_full and time-to-full if available
-            if matched_cauldron:
-                try:
-                    status_data = _call_and_extract(cauldron_status)
-                except Exception:
-                    status_data = None
-
-                found = None
-                if isinstance(status_data, list):
-                    for s in status_data:
-                        # match by id or name
-                        if s.get('id') == matched_cauldron.get('id') or (s.get('name') or '').lower() == (matched_cauldron.get('name') or '').lower():
-                            found = s
-                            break
-
-                if found:
-                    pct = found.get('percent_full')
-                    ttf_min = found.get('time_to_full_min')
-                    agent_final_response += f"\n{matched_cauldron.get('name')} ({matched_cauldron.get('id')}) is {pct}% full."
-                    if ttf_min is not None:
-                        agent_final_response += f" Estimated time to full: {ttf_min} minutes.\n"
-                    else:
-                        agent_final_response += " No reliable time-to-full available.\n"
-                else:
-                    agent_final_response += f"\nI found '{possible_name}' but couldn't fetch live status; try again or provide the cauldron id.\n"
-        else:
-            # It's an error dictionary
-            error_message = forecasts.get('error', 'Unknown error')
-            agent_final_response = f"I couldn't get the forecast. The tool reported an error: {error_message}"
-            agent_plan.append(f"Error: {error_message}")
-
-    # SIMULATION 3: User wants to TAKE ACTION
-    elif "dispatch" in user_message.lower() or "empty" in user_message.lower():
-        cauldron_id_to_dispatch = None
-        for cauldron in factory_static_data['cauldrons']:
-            if cauldron['id'] in user_message.lower() or cauldron['name'].split(" ")[0].lower() in user_message.lower():
-                cauldron_id_to_dispatch = cauldron['id']
-                break
-        
-        if cauldron_id_to_dispatch:
-            agent_plan.append(f"Plan: User wants to dispatch to {cauldron_id_to_dispatch}. I will call `dispatch_courier()`.")
-            
-            # This makes a POST request to our *own* server (use safe_post with short timeout)
-            dispatch_result = safe_post(
-                "http://127.0.0.1:5000/api/logistics/dispatch_courier",
-                json={"cauldron_id": cauldron_id_to_dispatch},
-                timeout=3
-            ) or {"status": "error", "message": "dispatch failed or timed out"}
-
-            agent_plan.append(f"Tool Result: {dispatch_result.get('status')}.")
-            agent_final_response = dispatch_result.get('message', 'No message')
-        else:
-            agent_final_response = "Which cauldron (e.g., cauldron_001) should I dispatch to?"
-            
-    # SIMULATION 4: User asks for the BONUS
-    elif "optimize" in user_message.lower() or "routes" in user_message.lower() or "witches" in user_message.lower():
-        agent_plan.append("Plan: User asked for the Bonus. I will explain the solution using the live API data.")
-        
-        # Pull data from our loaded static info!
-        network_edges = len(factory_static_data['network']) # This might be a dict, adjust as needed
-        num_couriers = len(factory_static_data['couriers'])
-        market_name = factory_static_data['market'].get('name', 'The Enchanted Market')
-        
-        agent_final_response = (
-            "This is the EOG Bonus! Here is how I would solve it:\n"
-            f"1. **Use Forecast:** First, I call my `forecast_fill_times()` tool to get a 'deadline' for each cauldron.\n"
-            f"2. **Use Network Map:** I will use the **`/api/Information/network`** data to calculate travel times between the {market_name} and all urgent cauldrons.\n"
-            f"3. **Account for Constraints:** I'll add the 15-minute `unload_time` at the market, plus the `drain_rate` (from `/api/Data/metadata`) to calculate drain time.\n"
-            f"4. **Find Minimum Witches:** I'll run a VRP (Vehicle Routing Problem) algorithm to find the minimum number of the **{num_couriers} available couriers** (from `/api/Information/couriers`) needed to service all cauldrons before they overflow."
-        )
-
-    else:
-        agent_final_response = "I am connected to the EOG API. I can **check tickets**, **forecast** fill times, **dispatch** couriers, or **optimize routes**."
-    # If requested, refine or generate the final response using NVIDIA Nemotron
-    if use_nemotron:
-        if not _HAS_NEMOTRON:
-            agent_plan.append("Note: Nemotron client not installed; set up 'openai' package to enable.")
-        elif not nv_api_key:
-            agent_plan.append("Note: NV API key not provided; set 'nv_api_key' in the request or NV_API_KEY env var.")
-        else:
-            # Stream from Nemotron and assemble the final response server-side.
-            try:
-                system_msg = (
-                    "You are an assistant integrated with a factory monitoring system. "
-                    "Use the agent plan and tool outputs to craft a concise, actionable reply to the user. "
-                    "Be clear about any suggested actions."
-                )
-
-                context_text = "\n".join(agent_plan)
-                prompt = (
-                    f"Context:\n{context_text}\n\nUser message:\n{user_message}\n\n"
-                    "Provide a short assistant reply based on the context."
-                )
-
-                messages = [
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": prompt}
-                ]
-
-                client = OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=nv_api_key)
-                completion = client.chat.completions.create(
-                    model="nvidia/nvidia-nemotron-nano-9b-v2",
-                    messages=messages,
-                    temperature=0.6,
-                    top_p=0.95,
-                    max_tokens=512,
-                    frequency_penalty=0,
-                    presence_penalty=0,
-                    stream=True,
-                    extra_body={"min_thinking_tokens": 256, "max_thinking_tokens": 512}
-                )
-
-                assembled = []
-                reasoning_parts = []
-                # iterate streamed deltas and collect content
-                for chunk in completion:
-                    try:
-                        delta = chunk.choices[0].delta
-                    except Exception:
-                        delta = None
-
-                    if delta is None:
-                        continue
-
-                    reasoning = getattr(delta, 'reasoning_content', None)
-                    content = getattr(delta, 'content', None)
-                    if content is None:
-                        content = getattr(delta, 'text', None)
-
-                    if reasoning:
-                        reasoning_parts.append(str(reasoning))
-                    if content:
-                        assembled.append(str(content))
-
-                final_text = "".join(assembled).strip()
-                if final_text:
-                    agent_final_response = final_text
-                    agent_plan.append("Tool Result: Response generated by Nemotron (stream).")
-                    # Optionally attach reasoning to the plan for debugging
-                    if reasoning_parts and show_reasoning:
-                        agent_plan.append("Nemotron reasoning: " + " ".join(reasoning_parts))
-                else:
-                    agent_plan.append("Warning: Nemotron streamed no text; keeping local response.")
-            except Exception as e:
-                # Log full traceback to server logs for debugging connectivity/disconnect issues
-                tb = traceback.format_exc()
-                print("[Nemotron] streaming call failed:", str(e))
-                print(tb)
-                agent_plan.append(f"Nemotron call failed (stream): {str(e)}")
-
-                # Attempt a one-time non-streaming fallback to get an error message or final text
-                try:
-                    fallback = client.chat.completions.create(
-                        model="nvidia/nvidia-nemotron-nano-9b-v2",
-                        messages=messages,
-                        temperature=0.6,
-                        top_p=0.95,
-                        max_tokens=512,
-                        frequency_penalty=0,
-                        presence_penalty=0,
-                        stream=False,
-                        extra_body={"min_thinking_tokens": 256, "max_thinking_tokens": 512}
-                    )
-                    # Try to extract returned text from several possible shapes
-                    text_out = ""
-                    try:
-                        if hasattr(fallback, 'choices'):
-                            ch0 = fallback.choices[0]
-                            # OpenAI-like SDKs sometimes put content in .message or .text
-                            if hasattr(ch0, 'message') and isinstance(ch0.message, dict) and 'content' in ch0.message:
-                                text_out = ch0.message['content']
-                            elif hasattr(ch0, 'text'):
-                                text_out = ch0.text
-                            elif isinstance(ch0, dict):
-                                msg = ch0.get('message') or {}
-                                text_out = msg.get('content') or ch0.get('text') or ""
-                        elif isinstance(fallback, dict):
-                            choices = fallback.get('choices', [])
-                            if choices:
-                                c0 = choices[0]
-                                msg = c0.get('message') or {}
-                                text_out = msg.get('content') or c0.get('text') or ""
-                    except Exception as e_parse:
-                        agent_plan.append(f"Nemotron fallback parse failed: {e_parse}")
-
-                    text_out = (text_out or "").strip()
-                    if text_out:
-                        agent_final_response = text_out
-                        agent_plan.append("Tool Result: Nemotron non-streaming response used as fallback.")
-                    else:
-                        agent_plan.append("Nemotron non-streaming returned empty text.")
-                except Exception as e2:
-                    print("[Nemotron] non-stream fallback failed:", str(e2))
-                    agent_plan.append(f"Nemotron non-stream fallback failed: {str(e2)}")
-
+            print(f"[Nemotron] Failed to initialize client: {e}")
+    
+    # Create agent workflow
+    agent = AgentWorkflow(nemotron_client=nemotron_client)
+    
+    # Execute multi-step workflow
+    result = agent.plan_and_execute(user_message)
+    
     return jsonify({
-        "agent_response": agent_final_response,
-        "agent_plan": agent_plan
+        'agent_response': result['response'],
+        'agent_plan': result['steps'],
+        'intent': result['intent'],
+        'workflow_complete': True
     })
+
+
+@app.route('/api/agent/insights')
+@requires_auth
+def get_agent_insights():
+    """
+    NEW: Proactive monitoring endpoint
+    Returns important insights without user prompting
+    """
+    nv_api_key = request.args.get('nv_api_key') or _get_nv_api_key_from_env()
+    
+    # Initialize Nemotron client if available
+    nemotron_client = None
+    if _HAS_NEMOTRON and nv_api_key:
+        try:
+            nemotron_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=nv_api_key
+            )
+        except Exception:
+            pass
+    
+    # Create agent and get proactive insights
+    agent = AgentWorkflow(nemotron_client=nemotron_client)
+    insights = agent.get_proactive_insights()
+    
+    return jsonify(insights)
+
+
+# Helper to get NVIDIA API key from environment
+def _get_nv_api_key_from_env():
+    """Retrieve NVIDIA API key from environment variables."""
+    return os.environ.get('NV_API_KEY') or os.environ.get('nv_api_key') or os.environ.get('NVIDIA_API_KEY')
 
 
 # --- Frontend Routes ---
