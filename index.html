@@ -48,19 +48,20 @@
 
         .container {
             position: relative; /* To appear above the background */
-            background: rgba(30, 30, 46, 0.75);
+            background: rgba(90, 51, 24, 0.88); /* darker door brown tint */
             backdrop-filter: blur(3px);
-            /* Smaller padding and stronger scale to reduce overall size */
+            /* Restore previous padding to undo widening */
             padding: 40px 44px 30px;
             /* Semi-elliptical shape: large radius at top, straight at bottom */
             border-radius: 160px 160px 0 0;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(226,180,106,0.63); /* #e2b46a with ~0.63 alpha */
-            /* Keep smaller but centered (no vertical translate) */
-            transform: scale(0.90);
+            border: 1px solid rgba(170,120,60,0.55); /* adjust border to harmonize with darker brown */
+            /* Keep position but undo scale-based widening */
+            transform: translateY(-32px) scale(0.90);
             transform-origin: center center;
             /* Ensure bottom alignment with the door */
             margin-top: auto;
+            /* Remove explicit width constraints (revert widening) */
         }
 
         .logo {
