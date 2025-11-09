@@ -93,6 +93,8 @@ except Exception:
 # Global state for courier dispatch operations
 active_drains = {}  # {cauldron_id: {'start_time': datetime, 'initial_level': float, 'drain_rate': float}}
 drains_lock = threading.Lock()  # Thread safety for active_drains
+resolved_tickets = set()  # Track ticket IDs that have been resolved (locally)
+resolved_tickets_lock = threading.Lock()  # Thread safety for resolved_tickets
 
 # --- Agent System: Multi-step workflow with tool integration ---
 class AgentWorkflow:
@@ -173,7 +175,9 @@ class AgentWorkflow:
             return {'error': str(e)}
     
     def _resolve_tickets_for_cauldron(self, cauldron_id):
-        """Resolve all tickets for a specific cauldron by calling the API"""
+        """Mark tickets as resolved locally (and optionally try API if available)"""
+        global resolved_tickets, resolved_tickets_lock
+        
         try:
             # Get all unresolved tickets for this cauldron
             tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets')
@@ -186,49 +190,28 @@ class AgentWorkflow:
             )
             
             resolved_count = 0
-            for ticket in tickets_list:
-                ticket_cauldron = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
-                ticket_id = ticket.get('id') or ticket.get('ticket_id') or ticket.get('ticketId')
-                status = (ticket.get('status') or '').lower()
-                
-                # Only resolve tickets for this cauldron that aren't already resolved
-                if ticket_cauldron == cauldron_id and status not in ['resolved', 'completed', 'done']:
-                    try:
-                        # Try multiple API methods to resolve the ticket
-                        url = f"{EOG_API_BASE_URL}/api/Tickets/{ticket_id}"
+            with resolved_tickets_lock:
+                for ticket in tickets_list:
+                    ticket_cauldron = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
+                    ticket_id = ticket.get('id') or ticket.get('ticket_id') or ticket.get('ticketId')
+                    
+                    # Mark all tickets for this cauldron as resolved locally
+                    if ticket_cauldron == cauldron_id and ticket_id and ticket_id not in resolved_tickets:
+                        resolved_tickets.add(ticket_id)
+                        resolved_count += 1
+                        print(f"[RESOLVE] ✓ Locally resolved ticket {ticket_id} for {cauldron_id}")
                         
-                        # Try PUT first
-                        response = requests.put(url, json={'status': 'resolved'}, timeout=5, verify=False)
-                        if response.status_code in [200, 201, 204]:
-                            resolved_count += 1
-                            print(f"[RESOLVE] ✓ PUT resolved ticket {ticket_id} for {cauldron_id}")
-                            continue
-                        
-                        # Try PATCH
-                        response = requests.patch(url, json={'status': 'resolved'}, timeout=5, verify=False)
-                        if response.status_code in [200, 201, 204]:
-                            resolved_count += 1
-                            print(f"[RESOLVE] ✓ PATCH resolved ticket {ticket_id} for {cauldron_id}")
-                            continue
-                        
-                        # Try POST to a resolve endpoint
-                        resolve_url = f"{EOG_API_BASE_URL}/api/Tickets/{ticket_id}/resolve"
-                        response = requests.post(resolve_url, timeout=5, verify=False)
-                        if response.status_code in [200, 201, 204]:
-                            resolved_count += 1
-                            print(f"[RESOLVE] ✓ POST resolved ticket {ticket_id} for {cauldron_id}")
-                            continue
-                        
-                        print(f"[RESOLVE] ✗ Could not resolve {ticket_id}: tried PUT/PATCH/POST, last status {response.status_code}")
-                        print(f"[RESOLVE]   Response: {response.text[:200]}")
-                        
-                    except Exception as e:
-                        print(f"[RESOLVE] ✗ Error resolving {ticket_id}: {e}")
+                        # Optionally try to resolve via API (but don't fail if it doesn't work)
+                        try:
+                            url = f"{EOG_API_BASE_URL}/api/Tickets/{ticket_id}"
+                            requests.put(url, json={'status': 'resolved'}, timeout=2, verify=False)
+                        except:
+                            pass  # Ignore API errors - we track locally
             
             if resolved_count > 0:
-                print(f"[RESOLVE] ✅ Resolved {resolved_count} ticket(s) for {cauldron_id}")
+                print(f"[RESOLVE] ✅ Marked {resolved_count} ticket(s) as resolved for {cauldron_id}")
             else:
-                print(f"[RESOLVE] No tickets needed resolution for {cauldron_id}")
+                print(f"[RESOLVE] No new tickets to resolve for {cauldron_id}")
                 
         except Exception as e:
             print(f"[RESOLVE] Error in _resolve_tickets_for_cauldron: {e}")
@@ -2241,17 +2224,22 @@ def tickets_match():
     tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) and isinstance(tickets_raw.get('transport_tickets'), list) else (tickets_raw.get('tickets') if isinstance(tickets_raw, list) else []))
 
     # Deduplicate tickets by ticket_id (API may return duplicates)
-    # AND filter out resolved/completed tickets
+    # AND filter out resolved/completed tickets (both from API and locally resolved)
+    global resolved_tickets, resolved_tickets_lock
+    
     seen_tickets = {}
-    for t in tickets_list:
-        ticket_id = t.get('id') or t.get('ticket_id') or t.get('ticketId')
-        # Check if ticket is resolved/completed
-        status = (t.get('status') or t.get('state') or t.get('resolved') or '').lower()
-        is_resolved = status in ['resolved', 'completed', 'done', 'closed', 'finished'] or t.get('resolved') == True
-        
-        # Only include unresolved tickets
-        if ticket_id and ticket_id not in seen_tickets and not is_resolved:
-            seen_tickets[ticket_id] = t
+    with resolved_tickets_lock:
+        for t in tickets_list:
+            ticket_id = t.get('id') or t.get('ticket_id') or t.get('ticketId')
+            # Check if ticket is resolved/completed
+            status = (t.get('status') or t.get('state') or t.get('resolved') or '').lower()
+            is_resolved_api = status in ['resolved', 'completed', 'done', 'closed', 'finished'] or t.get('resolved') == True
+            is_resolved_local = ticket_id in resolved_tickets
+            
+            # Only include unresolved tickets (not resolved via API or locally)
+            if ticket_id and ticket_id not in seen_tickets and not is_resolved_api and not is_resolved_local:
+                seen_tickets[ticket_id] = t
+    
     tickets_list = list(seen_tickets.values())
 
     # Fetch full historical data once
