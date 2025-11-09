@@ -1,13 +1,78 @@
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from flask_cors import CORS
 import requests # Make sure you have run 'pip install requests'
-import random
+import statistics
 import time
 import os
 import threading
-import statistics
 import traceback
+import json
+# Optional dotenv support for local development secrets
+try:
+    # Import dynamically to avoid static analyzers/linting errors when
+    # the 'python-dotenv' package is not installed in the environment.
+    import importlib
+    import importlib.util
+
+    if importlib.util.find_spec('dotenv') is not None:
+        load_dotenv = importlib.import_module('dotenv').load_dotenv
+        _HAVE_DOTENV = True
+    else:
+        load_dotenv = None
+        _HAVE_DOTENV = False
+except Exception:
+    load_dotenv = None
+    _HAVE_DOTENV = False
 from datetime import datetime, timedelta, timezone
+
+# --- Networking safety defaults ---
+DEFAULT_REQUEST_TIMEOUT = 5  # seconds for external API calls
+
+if _HAVE_DOTENV:
+    try:
+        # Import find_dotenv dynamically to avoid static analyzers failing when
+        # the 'python-dotenv' package is not installed in the environment.
+        import importlib
+        dotenv_mod = importlib.import_module('dotenv')
+        find_dotenv = getattr(dotenv_mod, 'find_dotenv', None)
+    except Exception:
+        find_dotenv = None
+
+    try:
+        if callable(load_dotenv) and callable(find_dotenv):
+            load_dotenv(find_dotenv())
+        elif callable(load_dotenv):
+            # fallback: call load_dotenv without an explicit path
+            load_dotenv()
+    except Exception:
+        # ignore errors loading local env file
+        pass
+
+def safe_get(url, timeout=None, **kwargs):
+    t = timeout or DEFAULT_REQUEST_TIMEOUT
+    try:
+        resp = requests.get(url, timeout=t, **kwargs)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return resp.text
+    except Exception as e:
+        print(f"[http] GET {url} failed: {e}")
+        return None
+
+def safe_post(url, json=None, timeout=None, **kwargs):
+    t = timeout or DEFAULT_REQUEST_TIMEOUT
+    try:
+        resp = requests.post(url, json=json, timeout=t, **kwargs)
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return resp.text
+    except Exception as e:
+        print(f"[http] POST {url} failed: {e}")
+        return None
 
 # Optional: NVIDIA Nemotron client (OpenAI-compatible wrapper)
 try:
@@ -21,146 +86,58 @@ except Exception:
 app = Flask(__name__)
 CORS(app) 
 
+# Load local .env if python-dotenv is installed. This is optional and safe.
+if _HAVE_DOTENV:
+    try:
+        # Use find_dotenv if available to locate the .env file in the repo tree
+        dotenv_mod = importlib.import_module('dotenv')
+        find_dotenv = getattr(dotenv_mod, 'find_dotenv', None)
+        if callable(load_dotenv) and callable(find_dotenv):
+            env_path = find_dotenv()
+            if env_path:
+                load_dotenv(env_path)
+                # Don't print the key, just report presence
+                if os.environ.get('NV_API_KEY') or os.environ.get('nv_api_key'):
+                    print('[env] .env loaded and NV_API_KEY found (hidden)')
+            else:
+                # fallback to calling load_dotenv() which will try default filename
+                load_dotenv()
+                if os.environ.get('NV_API_KEY') or os.environ.get('nv_api_key'):
+                    print('[env] .env loaded (default) and NV_API_KEY found (hidden)')
+        elif callable(load_dotenv):
+            # Fallback: call load_dotenv without explicit path
+            load_dotenv()
+            if os.environ.get('NV_API_KEY') or os.environ.get('nv_api_key'):
+                print('[env] .env loaded (fallback) and NV_API_KEY found (hidden)')
+    except Exception as e:
+        # Don't crash the app for dotenv issues; just log them
+        print('[env] dotenv load failed:', e)
+
+# Expose a normalized environment lookup for NV API key. Accept either
+# uppercase `NV_API_KEY` or lowercase `nv_api_key` (some users set envs in
+# different case-sensitive shells). This helper avoids duplicating logic.
+def _get_nv_api_key_from_env():
+    return os.environ.get('NV_API_KEY') or os.environ.get('nv_api_key')
 # ### NEW: Define the EOG API Base URL ###
 EOG_API_BASE_URL = "https://hackutd2025.eog.systems" 
 
-# --- NEW: Load ALL Static Data from the API on Startup ---
-def load_static_factory_data():
-    """
-    Called ONCE when the server starts.
-    Fetches all static data (names, network, etc.) from the API
-    and stores it in memory.
-    """
-    print("Loading static factory data from EOG API...")
-    try:
-        # Use the endpoints from your screenshot
-        cauldrons = requests.get(EOG_API_BASE_URL + "/api/Information/cauldrons").json()
-        network = requests.get(EOG_API_BASE_URL + "/api/Information/network").json()
-        market = requests.get(EOG_API_BASE_URL + "/api/Information/market").json()
-        couriers = requests.get(EOG_API_BASE_URL + "/api/Information/couriers").json()
-        
-        # ### THE MOST IMPORTANT PART: FILL/DRAIN RATES ###
-        # First try to ingest explicit metadata rates from the API.
-        meta = None
-        try:
-            meta = requests.get(EOG_API_BASE_URL + '/api/Data/metadata', timeout=5).json()
-        except Exception:
-            meta = None
+# --- Helper Function Definitions (Moved to top) ---
 
-        meta_rates = {}
-        if isinstance(meta, dict):
-            for key in ('cauldron_rates', 'rates', 'fill_rates', 'per_cauldron'):
-                if key in meta and isinstance(meta[key], dict):
-                    meta_rates = meta[key]
-                    break
-
-        # If metadata didn't provide per-cauldron rates, compute them from history
-        computed = {}
-        try:
-            computed = _compute_rates_from_history()
-        except Exception:
-            computed = {}
-
-        for c in cauldrons:
-            cid = c.get('id')
-            rate_obj = None
-            if cid and cid in meta_rates:
-                rate_obj = meta_rates.get(cid)
-            elif cid and cid in computed:
-                rate_obj = computed.get(cid)
-
-            if isinstance(rate_obj, dict):
-                c['fill_rate_per_min'] = float(rate_obj.get('fill_rate_per_min', rate_obj.get('fill_rate', 0)))
-                c['drain_rate_per_min'] = float(rate_obj.get('drain_rate_per_min', rate_obj.get('drain_rate', 0)))
-            else:
-                # Last-ditch: try a per-cauldron metadata query before falling back.
-                per_rate = None
-                try:
-                    per_meta_resp = requests.get(EOG_API_BASE_URL + f"/api/Data/metadata?cauldronId={cid}", timeout=5)
-                    if per_meta_resp.status_code == 200:
-                        per_meta = per_meta_resp.json()
-                        # metadata may contain nested maps like {'cauldron_rates': {cid: {...}}}
-                        if isinstance(per_meta, dict):
-                            for key in ('cauldron_rates', 'rates', 'fill_rates', 'per_cauldron'):
-                                if key in per_meta and isinstance(per_meta[key], dict) and cid in per_meta[key]:
-                                    per_rate = per_meta[key].get(cid)
-                                    break
-                            # or the response itself may directly contain rate fields
-                            if per_rate is None and ('fill_rate_per_min' in per_meta or 'drain_rate_per_min' in per_meta):
-                                per_rate = per_meta
-                except Exception:
-                    per_rate = None
-
-                if isinstance(per_rate, dict):
-                    c['fill_rate_per_min'] = float(per_rate.get('fill_rate_per_min', per_rate.get('fill_rate', 1.0)))
-                    c['drain_rate_per_min'] = float(per_rate.get('drain_rate_per_min', per_rate.get('drain_rate', 12.0)))
-                else:
-                    # deterministic fallback (avoid randomness which confused debugging/UX)
-                    fallback_fill = 1.0
-                    fallback_drain = 12.0
-                    c['fill_rate_per_min'] = fallback_fill
-                    c['drain_rate_per_min'] = fallback_drain
-                    print(f"[rates] No metadata/computed rates for cauldron {cid}; using fallback fill={fallback_fill}, drain={fallback_drain}")
-            
-        print(f"Successfully loaded data for {len(cauldrons)} cauldrons.")
-        
-        return {
-            "cauldrons": cauldrons,
-            "network": network,
-            "market": market,
-            "couriers": couriers
-        }
-        
-    except Exception as e:
-        print(f"!!!!!!!!!!!!!! FAILED TO LOAD STATIC DATA !!!!!!!!!!!!!!")
-        print(f"Error: {e}")
-        print("Is the EOG API down or did the URL change?")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+def _parse_timestamp(ts_str):
+    """Parse ISO-like timestamps returned by the EOG API. Supports trailing Z."""
+    if not ts_str:
         return None
-
-def _refresh_rates_periodically(interval_seconds=60):
-    """Background thread: periodically recompute rates from history and update factory_static_data in-place.
-    This ensures we use real data where available instead of relying on random fallbacks.
-    """
-    def loop():
-        while True:
-            try:
-                computed = _compute_rates_from_history()
-                if computed:
-                    # update factory_static_data in place
-                    for c in factory_static_data.get('cauldrons', []):
-                        cid = c.get('id')
-                        if cid in computed:
-                            rates = computed[cid]
-                            c['fill_rate_per_min'] = rates.get('fill_rate_per_min', c.get('fill_rate_per_min', 0))
-                            c['drain_rate_per_min'] = rates.get('drain_rate_per_min', c.get('drain_rate_per_min', 0))
-                    print('[rates] Updated fill/drain rates from history')
-            except Exception as e:
-                print(f'[rates] Background rate refresh failed: {e}')
-            time.sleep(interval_seconds)
-
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
-
-
-@app.route('/api/compute_rates')
-def api_compute_rates():
-    """Trigger an on-demand recompute of per-cauldron rates from history.
-    Returns the computed rates (may be empty if history insufficient).
-    """
     try:
-        computed = _compute_rates_from_history()
-        if computed:
-            for c in factory_static_data.get('cauldrons', []):
-                cid = c.get('id')
-                if cid in computed:
-                    rates = computed[cid]
-                    c['fill_rate_per_min'] = rates.get('fill_rate_per_min', c.get('fill_rate_per_min', 0))
-                    c['drain_rate_per_min'] = rates.get('drain_rate_per_min', c.get('drain_rate_per_min', 0))
-        return jsonify({'computed': computed})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
+        # Handle trailing Z
+        if ts_str.endswith('Z'):
+            ts_str = ts_str[:-1] + '+00:00'
+        return datetime.fromisoformat(ts_str)
+    except Exception:
+        try:
+            # fallback: try common format
+            return datetime.strptime(ts_str, '%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            return None
 
 def _compute_rates_from_history(sample_limit=500):
     """Analyze the recent /api/Data time-series and compute per-cauldron
@@ -170,7 +147,7 @@ def _compute_rates_from_history(sample_limit=500):
     try:
         # Request the full historic range per the challenge guidance so rate computation
         # uses minute-by-minute samples across the whole dataset when possible.
-        raw = requests.get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20).json()
+        raw = safe_get(EOG_API_BASE_URL + '/api/Data?start_date=0&end_date=2000000000', timeout=20) or {}
     except Exception:
         return {}
 
@@ -266,6 +243,212 @@ def _compute_rates_from_history(sample_limit=500):
 
     return rates
 
+# --- NEW: Load ALL Static Data from the API on Startup ---
+def load_static_factory_data():
+    """
+    Called ONCE when the server starts.
+    Fetches all static data (names, network, etc.) from the API
+    and stores it in memory.
+    """
+    print("Loading static factory data from EOG API...")
+    try:
+        # Use the endpoints from your screenshot
+        cauldrons = safe_get(EOG_API_BASE_URL + "/api/Information/cauldrons") or []
+        network = safe_get(EOG_API_BASE_URL + "/api/Information/network") or {}
+        market = safe_get(EOG_API_BASE_URL + "/api/Information/market") or {}
+        couriers = safe_get(EOG_API_BASE_URL + "/api/Information/couriers") or []
+        
+        # ### THE MOST IMPORTANT PART: FILL/DRAIN RATES ###
+        # First try to ingest explicit metadata rates from the API.
+        meta = None
+        try:
+            meta = safe_get(EOG_API_BASE_URL + '/api/Data/metadata', timeout=5)
+        except Exception:
+            meta = None
+
+        meta_rates = {}
+        if isinstance(meta, dict):
+            for key in ('cauldron_rates', 'rates', 'fill_rates', 'per_cauldron'):
+                if key in meta and isinstance(meta[key], dict):
+                    meta_rates = meta[key]
+                    break
+
+        # If metadata didn't provide per-cauldron rates, compute them from history
+        computed = {}
+        try:
+            computed = _compute_rates_from_history()
+        except Exception:
+            computed = {}
+
+        for c in cauldrons:
+            cid = c.get('id')
+            rate_obj = None
+            if cid and cid in meta_rates:
+                rate_obj = meta_rates.get(cid)
+            elif cid and cid in computed:
+                rate_obj = computed.get(cid)
+
+            if isinstance(rate_obj, dict):
+                c['fill_rate_per_min'] = float(rate_obj.get('fill_rate_per_min', rate_obj.get('fill_rate', 0)))
+                c['drain_rate_per_min'] = float(rate_obj.get('drain_rate_per_min', rate_obj.get('drain_rate', 0)))
+            else:
+                # Last-ditch: try a per-cauldron metadata query before falling back.
+                per_rate = None
+                try:
+                    per_meta = safe_get(EOG_API_BASE_URL + f"/api/Data/metadata?cauldronId={cid}", timeout=5)
+                    # metadata may contain nested maps like {'cauldron_rates': {cid: {...}}}
+                    if isinstance(per_meta, dict):
+                        for key in ('cauldron_rates', 'rates', 'fill_rates', 'per_cauldron'):
+                            if key in per_meta and isinstance(per_meta[key], dict) and cid in per_meta[key]:
+                                per_rate = per_meta[key].get(cid)
+                                break
+                        # or the response itself may directly contain rate fields
+                        if per_rate is None and ('fill_rate_per_min' in per_meta or 'drain_rate_per_min' in per_meta):
+                            per_rate = per_meta
+                except Exception:
+                    per_rate = None
+
+                if isinstance(per_rate, dict):
+                    c['fill_rate_per_min'] = float(per_rate.get('fill_rate_per_min', per_rate.get('fill_rate', 1.0)))
+                    c['drain_rate_per_min'] = float(per_rate.get('drain_rate_per_min', per_rate.get('drain_rate', 12.0)))
+                else:
+                    # deterministic fallback (avoid randomness which confused debugging/UX)
+                    fallback_fill = 1.0
+                    fallback_drain = 12.0
+                    c['fill_rate_per_min'] = fallback_fill
+                    c['drain_rate_per_min'] = fallback_drain
+                    print(f"[rates] No metadata/computed rates for cauldron {cid}; using fallback fill={fallback_fill}, drain={fallback_drain}")
+        # --- Normalize coordinates for frontend ---
+        # Accept many possible key names and nested structures, then coerce to floats
+        def _find_coord(obj, *keys):
+            # try dotted path first
+            for k in keys:
+                parts = k.split('.')
+                cur = obj
+                ok = True
+                for p in parts:
+                    if isinstance(cur, dict) and p in cur:
+                        cur = cur[p]
+                    else:
+                        ok = False
+                        break
+                if ok and cur is not None:
+                    return cur
+            return None
+
+        # possible names to look for
+        lat_keys = ('lat','latitude','location.lat','coords.lat')
+        lon_keys = ('lon','lng','longitude','location.lon','coords.lon')
+
+        # normalize each cauldron
+        for c in cauldrons:
+            # try direct keys first
+            lat = _find_coord(c, *lat_keys)
+            lon = _find_coord(c, *lon_keys)
+            # sometimes coordinates are strings inside nested objects
+            try:
+                latf = float(lat) if lat is not None and lat != '' else None
+            except Exception:
+                latf = None
+            try:
+                lonf = float(lon) if lon is not None and lon != '' else None
+            except Exception:
+                lonf = None
+
+            if latf is not None and lonf is not None:
+                c['lat'] = latf
+                c['lon'] = lonf
+            else:
+                # leave missing for now; we'll fill deterministic positions below
+                c['lat'] = c.get('lat') if isinstance(c.get('lat'), (int,float)) else None
+                c['lon'] = c.get('lon') if isinstance(c.get('lon'), (int,float)) else None
+
+        # If many cauldrons lack coords, generate deterministic grid positions centered on the market if available
+        missing = [c for c in cauldrons if c.get('lat') is None or c.get('lon') is None]
+        if missing:
+            try:
+                center_lat = float(market.get('latitude') or market.get('lat') or 0)
+            except Exception:
+                center_lat = 0.0
+            try:
+                center_lon = float(market.get('longitude') or market.get('lon') or 0)
+            except Exception:
+                center_lon = 0.0
+
+            n = len(missing)
+            cols = int(max(1, round(n**0.5)))
+            rows = int((n + cols - 1) // cols)
+            spacing = 0.02  # ~ small lat/lon delta to separate points (~2km depending on lat)
+            idx = 0
+            for r in range(rows):
+                for cidx in range(cols):
+                    if idx >= n:
+                        break
+                    node = missing[idx]
+                    # place on a small grid around center
+                    node['lat'] = center_lat + (r - rows/2) * spacing
+                    node['lon'] = center_lon + (cidx - cols/2) * spacing
+                    idx += 1
+
+        print(f"Successfully loaded data for {len(cauldrons)} cauldrons.")
+        
+        return {
+            "cauldrons": cauldrons,
+            "network": network,
+            "market": market,
+            "couriers": couriers
+        }
+        
+    except Exception as e:
+        print(f"!!!!!!!!!!!!!! FAILED TO LOAD STATIC DATA !!!!!!!!!!!!!!")
+        print(f"Error: {e}")
+        print("Is the EOG API down or did the URL change?")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        return None
+
+def _refresh_rates_periodically(interval_seconds=60):
+    """Background thread: periodically recompute rates from history and update factory_static_data in-place.
+    This ensures we use real data where available instead of relying on random fallbacks.
+    """
+    def loop():
+        while True:
+            try:
+                computed = _compute_rates_from_history()
+                if computed:
+                    # update factory_static_data in place
+                    for c in factory_static_data.get('cauldrons', []):
+                        cid = c.get('id')
+                        if cid in computed:
+                            rates = computed[cid]
+                            c['fill_rate_per_min'] = rates.get('fill_rate_per_min', c.get('fill_rate_per_min', 0))
+                            c['drain_rate_per_min'] = rates.get('drain_rate_per_min', c.get('drain_rate_per_min', 0))
+                    print('[rates] Updated fill/drain rates from history')
+            except Exception as e:
+                print(f'[rates] Background rate refresh failed: {e}')
+            time.sleep(interval_seconds)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
+
+@app.route('/api/compute_rates')
+def api_compute_rates():
+    """Trigger an on-demand recompute of per-cauldron rates from history.
+    Returns the computed rates (may be empty if history insufficient).
+    """
+    try:
+        computed = _compute_rates_from_history()
+        if computed:
+            for c in factory_static_data.get('cauldrons', []):
+                cid = c.get('id')
+                if cid in computed:
+                    rates = computed[cid]
+                    c['fill_rate_per_min'] = rates.get('fill_rate_per_min', c.get('fill_rate_per_min', 0))
+                    c['drain_rate_per_min'] = rates.get('drain_rate_per_min', c.get('drain_rate_per_min', 0))
+        return jsonify({'computed': computed})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 # This is now our global, in-memory map of the factory
 factory_static_data = load_static_factory_data()
@@ -294,10 +477,10 @@ def get_cauldron_levels():
     try:
         # This endpoint is from your screenshot!
         live_data_url = EOG_API_BASE_URL + "/api/Data" 
-        response = requests.get(live_data_url)
-        # The API likely returns:
-        # [{"cauldronId": "cauldron_001", "currentVolume": 750.5}, ...]
-        live_levels_data = response.json() 
+        live_levels_data = safe_get(live_data_url)
+        if live_levels_data is None:
+            print(f"ERROR fetching from /api/Data: timeout or API error")
+            return jsonify({"error": "Could not fetch /api/Data (timeout or API error)"}), 500
         
     except Exception as e:
         print(f"ERROR fetching from /api/Data: {e}")
@@ -306,10 +489,6 @@ def get_cauldron_levels():
     # 2. MERGE live data with our static data
     merged_cauldron_data = []
 
-    # Create a fast-lookup map of the live levels.
-    # The external `/api/Data` response can vary in shape. Be defensive:
-    # - it might be a list, or a dict with a list under keys like 'data' / 'items'
-    # - field names may use `cauldronId`, `id`, `cauldron_id`, etc.
     live_levels_list = live_levels_data
     if isinstance(live_levels_data, dict):
         # common wrappers
@@ -329,9 +508,6 @@ def get_cauldron_levels():
                     pass
                 return jsonify({"error": "Unexpected /api/Data format"}), 500
 
-    # Preferred format (observed in the EOG API): a time series list where each
-    # element is { 'timestamp': ..., 'cauldron_levels': { 'cauldron_001': 123.4, ... } }
-    # If that's what we received, take the most recent timestamp's map.
     live_levels_map = {}
     if isinstance(live_levels_list, list) and live_levels_list:
         # detect time-series shape
@@ -411,74 +587,7 @@ def get_cauldron_levels():
     return jsonify(merged_cauldron_data)
 
 
-@app.route('/api/tickets/check_discrepancies')
-def check_discrepancies():
-    """
-    Tool: The core EOG logic.
-    Fetches REAL tickets and REAL history to find mismatches.
-    """
-    
-    alerts = []
-    try:
-        # ### STEP 1: Fetch REAL Tickets ###
-        ticket_url = EOG_API_BASE_URL + "/api/Tickets" # From your screenshot!
-        real_tickets = requests.get(ticket_url).json()
-        
-        # ### STEP 2: Fetch REAL Historical Data ###
-        # This MUST be the /api/Data/metadata endpoint.
-        # You need to check what this returns. Does it take query params?
-        # e.g., /api/Data/metadata?cauldronId=cauldron_001
-        history_url = EOG_API_BASE_URL + "/api/Data/metadata" 
-        # For now, we assume it gives ALL history.
-        # historical_data = requests.get(history_url).json()
-        
-        # ### TODO: Build your matching logic ###
-        # This is the core of the EOG challenge.
-        # 1. Loop through each `real_ticket`.
-        # 2. Find its `cauldron_id` and `date`.
-        # 3. Go into the `historical_data` and find all drain events for that cauldron on that day.
-        # 4. For each drain event, calculate the "true" amount:
-        #    (LevelStart - LevelEnd) + (FillRate * DrainDuration)
-        # 5. Sum up the "true" amounts for the day.
-        # 6. Compare the sum to the `ticket.amount`.
-        
-        # Since we can't build that logic here, we will SIMULATE a finding
-        # based on the tickets we fetched.
-        
-        if real_tickets:
-            # Just grab the first ticket for a demo anomaly
-            first_ticket = real_tickets[0]
-            cauldron_id = first_ticket.get('cauldronId', 'cauldron_001')
-            ticket_amount = first_ticket.get('amount', 100)
-            
-            # Find this cauldron's static data
-            cauldron_data = next((c for c in factory_static_data['cauldrons'] if c['id'] == cauldron_id), None)
-            
-            # Simulate a mismatch
-            calculated_amount = ticket_amount - 50 # Simulate a 50L discrepancy
-            
-            alerts.append({
-                "cauldron_id": cauldron_id,
-                "message": f"Suspicious Ticket {first_ticket.get('id')}. Calculated: {calculated_amount:.1f}L, Ticket: {ticket_amount:.1f}L."
-            })
-            
-            # Add a second, hard-coded anomaly for demo purposes
-            alerts.append({
-                "cauldron_id": "cauldron_003",
-                "message": "Unlogged drain detected at 3:15 PM. No matching ticket found."
-            })
-
-    except Exception as e:
-        print(f"Error checking discrepancies: {e}")
-        return jsonify([{"message": "Error connecting to EOG API to check tickets."}])
-        
-    if not alerts:
-        return jsonify([{"message": "All tickets reconciled."}])
-        
-    return jsonify(alerts)
-
-
-# *** BUG FIX 1: Allow live_levels_data to be passed in ***
+# *** BUG FIX: Allow live_levels_data to be passed in ***
 @app.route('/api/logistics/forecast')
 def forecast_fill_times(live_levels_data=None):
     """
@@ -500,9 +609,7 @@ def forecast_fill_times(live_levels_data=None):
 
     # 2. Loop through the live data and use static data to forecast
     for cauldron in live_levels_data:
-        # This is the MOCKED fill rate.
-        # TODO: Get the REAL fill rate from /api/Data/metadata
-        fill_rate = cauldron['fill_rate_per_min'] 
+        fill_rate = cauldron.get('fill_rate_per_min', 0)
         
         if cauldron['current_level'] < cauldron['max_volume']:
             liters_to_full = cauldron['max_volume'] - cauldron['current_level']
@@ -539,7 +646,7 @@ def cauldron_status():
         return jsonify({"error": f"Could not fetch live levels: {e}"}), 500
 
     try:
-        # *** BUG FIX 2: Pass the live_levels data to stop the race condition ***
+        # *** BUG FIX: Pass the live_levels data to stop the race condition ***
         forecasts = forecast_fill_times(live_levels_data=live_levels)
         
     except Exception as e:
@@ -579,27 +686,13 @@ def cauldron_status():
             if time_to_full_seconds is not None:
                 try:
                     # compute proposed full_at
-                    new_full_at = now_utc + timedelta(seconds=int(time_to_full_seconds))
-                    cid = c.get('id')
-                    prev = forecast_state.get(cid)
-                    # smoothing policy: accept decreases immediately; cap increases to a small step
-                    if prev and isinstance(prev, datetime):
-                        delta_ms = (new_full_at - prev).total_seconds() * 1000.0
-                        if delta_ms <= -2000:
-                            # significant decrease -> accept immediately
-                            final_full_at = new_full_at
-                        elif delta_ms > 0:
-                            # allow only a small increase to avoid backward jumps on client
-                            max_increase_ms = 5000
-                            allowed = min(delta_ms, max_increase_ms)
-                            final_full_at = prev + timedelta(milliseconds=allowed)
-                        else:
-                            final_full_at = new_full_at
-                    else:
-                        final_full_at = new_full_at
-
-                    # store final into smoothing state and return isoformat
-                    forecast_state[cid] = final_full_at
+                    final_full_at = now_utc + timedelta(seconds=int(time_to_full_seconds))
+                    
+                    # *** BUG FIX: REMOVED THE FLAWED "SMOOTHING POLICY" ***
+                    # The client-side logic is now the only source of truth
+                    # for the 1-second countdown, so we just send the
+                    # most accurate 'full_at' time we have.
+                    
                     status['full_at'] = final_full_at.isoformat()
                 except Exception:
                     status['full_at'] = None
@@ -613,23 +706,6 @@ def cauldron_status():
     return jsonify(status_list)
 
 
-def _parse_timestamp(ts_str):
-    """Parse ISO-like timestamps returned by the EOG API. Supports trailing Z."""
-    if not ts_str:
-        return None
-    try:
-        # Handle trailing Z
-        if ts_str.endswith('Z'):
-            ts_str = ts_str[:-1] + '+00:00'
-        return datetime.fromisoformat(ts_str)
-    except Exception:
-        try:
-            # fallback: try common format
-            return datetime.strptime(ts_str, '%Y-%m-%dT%H:%M:%S')
-        except Exception:
-            return None
-
-
 @app.route('/api/data/historic')
 def data_historic():
     """Return historic /api/Data records filtered by query params:
@@ -641,10 +717,9 @@ def data_historic():
     end_q = request.args.get('end')
     cauldron_id = request.args.get('cauldron_id')
 
-    try:
-        raw = requests.get(EOG_API_BASE_URL + '/api/Data').json()
-    except Exception as e:
-        return jsonify({'error': f'Could not fetch /api/Data: {e}'}), 500
+    raw = safe_get(EOG_API_BASE_URL + '/api/Data')
+    if raw is None:
+        return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
     # Normalize wrapper shapes
     data_list = raw if isinstance(raw, list) else (raw.get('data') if isinstance(raw, dict) and isinstance(raw.get('data'), list) else [])
@@ -716,19 +791,17 @@ def tickets_match():
     Returns a list of ticket match results and any unmatched drain events.
     This recomputes on each request so it is resilient to changing ticket input.
     """
-    try:
-        tickets_raw = requests.get(EOG_API_BASE_URL + '/api/Tickets').json()
-    except Exception as e:
-        return jsonify({'error': f'Could not fetch /api/Tickets: {e}'}), 500
+    tickets_raw = safe_get(EOG_API_BASE_URL + '/api/Tickets')
+    if tickets_raw is None:
+        return jsonify({'error': 'Could not fetch /api/Tickets (timeout or API error)'}), 500
 
     # normalize tickets list
     tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('transport_tickets') if isinstance(tickets_raw, dict) and isinstance(tickets_raw.get('transport_tickets'), list) else (tickets_raw.get('tickets') if isinstance(tickets_raw, list) else []))
 
     # Fetch full historical data once
-    try:
-        data_raw = requests.get(EOG_API_BASE_URL + '/api/Data').json()
-    except Exception as e:
-        return jsonify({'error': f'Could not fetch /api/Data: {e}'}), 500
+    data_raw = safe_get(EOG_API_BASE_URL + '/api/Data')
+    if data_raw is None:
+        return jsonify({'error': 'Could not fetch /api/Data (timeout or API error)'}), 500
 
     data_list = data_raw if isinstance(data_raw, list) else (data_raw.get('data') if isinstance(data_raw, dict) and isinstance(data_raw.get('data'), list) else [])
 
@@ -825,7 +898,9 @@ def tickets_match():
 
         calculated = None
         matched_events = []
-        if cauldron_id and match_day and cid in drains_by_cauldron_day if True else False:
+        
+        # *** BUG FIX 1: 'cid' was used here, but it should be 'cauldron_id' ***
+        if cauldron_id and match_day and cauldron_id in drains_by_cauldron_day:
             # use our drains_by_cauldron_day lookup
             day_drains = drains_by_cauldron_day.get(cauldron_id, {}).get(match_day, [])
             calculated = sum(d['drained'] for d in day_drains)
@@ -914,8 +989,8 @@ def dispatch_courier():
 @app.route('/api/agent/chat', methods=['POST'])
 def handle_agent_chat():
     user_message = request.json.get('message')
-    # Optional: the client can pass `nv_api_key` or set NV_API_KEY env var.
-    nv_api_key = request.json.get('nv_api_key') or os.environ.get('NV_API_KEY')
+    # Optional: the client can pass `nv_api_key` or set NV_API_KEY (or nv_api_key) env var.
+    nv_api_key = request.json.get('nv_api_key') or _get_nv_api_key_from_env()
     use_nemotron = bool(request.json.get('use_nemotron')) or bool(nv_api_key)
     # Control whether Nemotron's internal 'reasoning' fragments are exposed in responses
     show_reasoning = bool(request.json.get('debug')) or bool(os.environ.get('NV_SHOW_REASONING'))
@@ -923,12 +998,49 @@ def handle_agent_chat():
     agent_plan = [] 
     agent_final_response = ""
 
+    # *** THIS IS THE FIX: REMOVED THE THREADED HELPER ***
+    # Helper function to safely call and parse tools
+    def _call_and_extract(fn):
+        """
+        Calls the tool function directly *in the same thread*
+        to preserve the Flask application context.
+        """
+        try:
+            # Call the function directly
+            res = fn()
+            
+            # If it's a tuple like (resp, status)
+            if isinstance(res, tuple):
+                    res = res[0]
+            # If it's a Flask Response object
+            if hasattr(res, 'get_json'):
+                try:
+                    return res.get_json()
+                except Exception:
+                    return {'error': 'Tool returned non-JSON response'}
+            # If it's already a dict/list
+            if isinstance(res, (dict, list)):
+                return res
+            # Last resort
+            try:
+                return json.loads(res.data)
+            except Exception:
+                return {'error': 'Could not decode tool response'}
+                
+        except Exception as e:
+            # Catch any exception from the tool itself
+            tb = traceback.format_exc() # Get the full traceback
+            print(f"--- Exception in tool {fn.__name__} ---")
+            print(tb)
+            print("---------------------------------------")
+            return {'error': f'Exception in tool: {e}'}
+
+
     # REAL EOG LOGIC 1: User asks for anomalies
     if "suspicious" in user_message.lower() or "anomaly" in user_message.lower() or "ticket" in user_message.lower():
         agent_plan.append("Plan: User asked about discrepancies. I will call the real `tickets_match()` tool.")
         
-        # This calls your REAL EOG logic endpoint
-        match_data = tickets_match().get_json() 
+        match_data = _call_and_extract(tickets_match) 
         
         suspicious_matches = [m for m in match_data.get('matches', []) if m['suspicious']]
         unmatched_drains = match_data.get('unmatched_drains', [])
@@ -947,15 +1059,79 @@ def handle_agent_chat():
     # SIMULATION 2: User asks for forecasts
     elif "forecast" in user_message.lower() or "full" in user_message.lower():
         agent_plan.append("Plan: User asked for forecasts. I will call `forecast_fill_times()`.")
-        
+
         # This calls our tool, which calls /api/Data
-        forecasts = forecast_fill_times().get_json()
+        try:
+            forecasts = _call_and_extract(forecast_fill_times)
+        except Exception as e:
+            forecasts = {'error': str(e)} # Be explicit that an error is a dict
+
         agent_plan.append(f"Tool Result: {forecasts}")
-        
-        agent_final_response = "Here is the live forecast (top 5):\n"
-        forecasts.sort(key=lambda x: x.get('time_to_full_min', 9999))
-        for f in forecasts[:5]:
-            agent_final_response += f"  - {f['name']} ({f['cauldron_id']}) will be full in {f['time_to_full_min']} minutes.\n"
+
+        # Check if 'forecasts' is a list before trying to sort it.
+        if isinstance(forecasts, list):
+            # If user asked about a particular cauldron ("how full is amber glow"), try to match name first
+            agent_final_response = "Here is the live forecast (top 5):\n"
+
+            # Helper: case-insensitive substring match against static cauldron names/ids
+            def _find_cauldron_by_text(text):
+                if not text:
+                    return None
+                q = text.lower()
+                for c in factory_static_data.get('cauldrons', []):
+                    name = (c.get('name') or '').lower()
+                    cid = (c.get('id') or '').lower()
+                    if q in name or q in cid:
+                        return c
+                return None
+
+            # Try to parse a potential cauldron name from the user message by stripping common words
+            possible_name = None
+            # crude heuristic: take words after 'is' or 'how full is' up to 5 words
+            low = user_message.lower()
+            if 'how full is' in low:
+                possible_name = low.split('how full is',1)[1].strip().split('?')[0].strip()
+            elif 'how full' in low and 'is' in low:
+                parts = low.split('is',1)
+                possible_name = parts[1].strip()
+
+            matched_cauldron = _find_cauldron_by_text(possible_name) if possible_name else None
+
+            # Sort and report top 5 forecasts as before
+            forecasts.sort(key=lambda x: x.get('time_to_full_min', 9999))
+            for f in forecasts[:5]:
+                agent_final_response += f"  - {f.get('name','?')} ({f.get('cauldron_id','?')}) will be full in {f.get('time_to_full_min','?')} minutes.\n"
+
+            # If a specific cauldron was matched, give its live percent_full and time-to-full if available
+            if matched_cauldron:
+                try:
+                    status_data = _call_and_extract(cauldron_status)
+                except Exception:
+                    status_data = None
+
+                found = None
+                if isinstance(status_data, list):
+                    for s in status_data:
+                        # match by id or name
+                        if s.get('id') == matched_cauldron.get('id') or (s.get('name') or '').lower() == (matched_cauldron.get('name') or '').lower():
+                            found = s
+                            break
+
+                if found:
+                    pct = found.get('percent_full')
+                    ttf_min = found.get('time_to_full_min')
+                    agent_final_response += f"\n{matched_cauldron.get('name')} ({matched_cauldron.get('id')}) is {pct}% full."
+                    if ttf_min is not None:
+                        agent_final_response += f" Estimated time to full: {ttf_min} minutes.\n"
+                    else:
+                        agent_final_response += " No reliable time-to-full available.\n"
+                else:
+                    agent_final_response += f"\nI found '{possible_name}' but couldn't fetch live status; try again or provide the cauldron id.\n"
+        else:
+            # It's an error dictionary
+            error_message = forecasts.get('error', 'Unknown error')
+            agent_final_response = f"I couldn't get the forecast. The tool reported an error: {error_message}"
+            agent_plan.append(f"Error: {error_message}")
 
     # SIMULATION 3: User wants to TAKE ACTION
     elif "dispatch" in user_message.lower() or "empty" in user_message.lower():
@@ -968,15 +1144,15 @@ def handle_agent_chat():
         if cauldron_id_to_dispatch:
             agent_plan.append(f"Plan: User wants to dispatch to {cauldron_id_to_dispatch}. I will call `dispatch_courier()`.")
             
-            # This makes a POST request to our *own* server
-            dispatch_response = requests.post(
-                "http://127.0.0.1:5000/api/logistics/dispatch_courier", 
-                json={"cauldron_id": cauldron_id_to_dispatch}
-            )
-            dispatch_result = dispatch_response.json()
-            
-            agent_plan.append(f"Tool Result: {dispatch_result['status']}.")
-            agent_final_response = dispatch_result['message']
+            # This makes a POST request to our *own* server (use safe_post with short timeout)
+            dispatch_result = safe_post(
+                "http://127.0.0.1:5000/api/logistics/dispatch_courier",
+                json={"cauldron_id": cauldron_id_to_dispatch},
+                timeout=3
+            ) or {"status": "error", "message": "dispatch failed or timed out"}
+
+            agent_plan.append(f"Tool Result: {dispatch_result.get('status')}.")
+            agent_final_response = dispatch_result.get('message', 'No message')
         else:
             agent_final_response = "Which cauldron (e.g., cauldron_001) should I dispatch to?"
             
@@ -1131,13 +1307,13 @@ def handle_agent_chat():
 @app.route('/')
 def index():
     """Serves the new homepage."""
-    # Serve the moved index.html from project root
+    # Serve the index.html from the project's root folder
     return send_from_directory(app.root_path, 'index.html')
 
 @app.route('/dashboard')
 def dashboard():
     """Serves the main Poyolab dashboard app."""
-    # Serve the moved dashboard.html from project root
+    # Serve the dashboard.html from the project's root folder
     return send_from_directory(app.root_path, 'dashboard.html')
 
 
@@ -1149,6 +1325,217 @@ def api_time():
         return jsonify({'server_time': now})
     except Exception:
         return jsonify({'server_time': None})
+
+
+def _build_graph_from_network(network_obj):
+    """Build adjacency map from network information.
+    Accepts several shapes: list of edges, or {edges: [...]}
+    Each edge may have 'from'/'to' or 'u'/'v' and a travel_time or travel_time_minutes field.
+    Returns: { node: [(neighbor, travel_seconds), ...], ... }
+    """
+    adj = {}
+    edges = []
+    if isinstance(network_obj, dict):
+        # common wrappers
+        if 'edges' in network_obj and isinstance(network_obj['edges'], list):
+            edges = network_obj['edges']
+        elif 'network' in network_obj and isinstance(network_obj['network'], dict) and isinstance(network_obj['network'].get('edges'), list):
+            edges = network_obj['network']['edges']
+        else:
+            # maybe it's already a list-like dict
+            edges = []
+    elif isinstance(network_obj, list):
+        edges = network_obj
+
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        a = e.get('from') or e.get('src') or e.get('u') or e.get('a')
+        b = e.get('to') or e.get('dst') or e.get('v') or e.get('b')
+        if not a or not b:
+            continue
+        # determine travel time in seconds
+        t = None
+        for k in ('travel_time_minutes','travel_time_min','travel_time','time_minutes','time','cost'):
+            if k in e:
+                try:
+                    t = float(e[k])
+                    break
+                except Exception:
+                    continue
+        if t is None:
+            # default small travel (1 minute)
+            t = 1.0
+        # if field was in minutes convert to seconds where key name suggests minutes
+        if 'minute' in (',').join(list(e.keys())).lower() or 'min' in (',').join(list(e.keys())).lower():
+            # assume minutes
+            t_sec = int(round(float(t) * 60))
+        else:
+            # ambiguous: treat as minutes by default
+            t_sec = int(round(float(t) * 60))
+
+        adj.setdefault(a, []).append((b, t_sec))
+        adj.setdefault(b, []).append((a, t_sec))
+
+    return adj
+
+
+def _dijkstra(adj, source):
+    import heapq
+    dist = {source: 0}
+    prev = {}
+    h = [(0, source)]
+    while h:
+        d, u = heapq.heappop(h)
+        if d != dist.get(u, None):
+            continue
+        for v, w in adj.get(u, []):
+            nd = d + w
+            if v not in dist or nd < dist[v]:
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(h, (nd, v))
+    return dist, prev
+
+
+@app.route('/api/optimizer/compute')
+def api_optimizer_compute():
+    """Compute courier routes to prevent cauldron overflow.
+    Returns a greedy schedule and the minimal number of couriers found by packing.
+    Query params:
+      unload_min (default 15)
+      safety_min (default 0)
+    """
+    try:
+        unload_min = float(request.args.get('unload_min') or 15.0)
+        safety_min = float(request.args.get('safety_min') or 0.0)
+    except Exception:
+        unload_min = 15.0
+        safety_min = 0.0
+
+    # get live status
+    try:
+        status_resp = cauldron_status()
+        if hasattr(status_resp, 'get_json'):
+            status = status_resp.get_json()
+        else:
+            status = status_resp
+    except Exception as e:
+        return jsonify({'error': f'Could not compute status: {e}'}), 500
+
+    # Build list of tasks: cauldrons with time_to_full_seconds
+    now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    tasks = []
+    for s in (status or []):
+        try:
+            cid = s.get('id')
+            ttf = s.get('time_to_full_seconds')
+            pct = s.get('percent_full') or 0
+            if ttf is None:
+                continue
+            deadline = now + timedelta(seconds=int(ttf) - int(safety_min * 60))
+            tasks.append({'id': cid, 'deadline': deadline, 'ttf_seconds': int(ttf), 'percent_full': pct})
+        except Exception:
+            continue
+
+    # load network adjacency
+    network_obj = factory_static_data.get('network')
+    adj = _build_graph_from_network(network_obj)
+
+    market = factory_static_data.get('market') or {}
+    market_id = market.get('id') or market.get('name') or 'market'
+
+    # precompute shortest paths among market and task nodes to speed feasibility checks
+    nodes_of_interest = [market_id] + [t['id'] for t in tasks]
+    dist_matrix = {}
+    for src in nodes_of_interest:
+        dists, _ = _dijkstra(adj, src)
+        dist_matrix[src] = dists
+
+    # map id->task
+    task_map = {t['id']: t for t in tasks}
+    # sort by deadline ascending
+    tasks.sort(key=lambda x: x['deadline'])
+
+    routes = []  # each route: {'seq':[ids], 'arrivals':{id:datetime}, 'impossible':bool}
+
+    def travel_seconds(u, v):
+        if u in dist_matrix and v in dist_matrix[u]:
+            return dist_matrix[u][v]
+        # fallback to dijkstra on-the-fly
+        dists, _ = _dijkstra(adj, u)
+        return dists.get(v)
+
+    def simulate_route_with_seq(seq):
+        # simulate starting at market now, visiting seq in order; return (feasible:boolean, arrivals:dict)
+        tcur = now
+        arrivals = {}
+        prev = market_id
+        for node in seq:
+            travel = travel_seconds(prev, node)
+            if travel is None:
+                return False, None
+            tcur = tcur + timedelta(seconds=travel)
+            arrivals[node] = tcur
+            prev = node
+        # return to market
+        travel_back = travel_seconds(prev, market_id)
+        if travel_back is None:
+            return False, None
+        tcur = tcur + timedelta(seconds=travel_back)
+        # include unload time at market
+        tcur = tcur + timedelta(minutes=unload_min)
+        # check deadlines
+        for node, at in arrivals.items():
+            task = task_map.get(node)
+            if task and at > task['deadline']:
+                return False, None
+        return True, arrivals
+
+    # Insertion-based greedy: try to insert each task into existing routes at best position
+    for task in tasks:
+        placed = False
+        best_choice = None  # (route_idx, insert_pos, arrivals)
+        for ri, r in enumerate(routes):
+            seq = r['seq']
+            # try all insertion positions 0..len(seq)
+            for pos in range(0, len(seq)+1):
+                new_seq = seq[:pos] + [task['id']] + seq[pos:]
+                ok, arrivals = simulate_route_with_seq(new_seq)
+                if ok:
+                    # choose the insertion that yields earliest latest-arrival (tightest)
+                    latest_arrival = max(arrivals.values()) if arrivals else now
+                    if best_choice is None or latest_arrival < best_choice[3]:
+                        best_choice = (ri, pos, new_seq, latest_arrival, arrivals)
+        if best_choice:
+            ri, pos, new_seq, _, arrivals = best_choice
+            routes[ri]['seq'] = new_seq
+            routes[ri]['arrivals'] = arrivals
+            placed = True
+        if not placed:
+            # try to create a new single-task route
+            ok, arrivals = simulate_route_with_seq([task['id']])
+            if ok:
+                routes.append({'seq': [task['id']], 'arrivals': arrivals, 'impossible': False})
+            else:
+                # cannot service even alone -> impossible
+                routes.append({'seq': [task['id']], 'arrivals': {}, 'impossible': True})
+
+    # format response
+    resp_routes = []
+    for i, r in enumerate(routes):
+        resp_routes.append({
+            'courier': i+1,
+            'sequence': r['seq'],
+            'arrivals': {k: v.isoformat() for k, v in (r.get('arrivals') or {}).items()},
+            'impossible': bool(r.get('impossible', False))
+        })
+
+    return jsonify({
+        'required_couriers': len(routes),
+        'routes': resp_routes,
+        'now': now.isoformat()
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

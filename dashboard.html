@@ -131,6 +131,7 @@
                     </div>
                     <div style="margin-top:8px">
                         <button id="run-match">Run Ticket Matching</button>
+                        <button id="optimize-routes" style="margin-left:8px">Optimize Routes</button>
                     </div>
                     <div id="match-results" style="margin-top:8px;max-height:200px;overflow:auto;background:#0f1220;padding:8px;border-radius:6px;color:#ddd"></div>
                 </div>
@@ -370,22 +371,56 @@
                 // Simple rendering: show cauldrons with coordinates if available
                 const svgNS = 'http://www.w3.org/2000/svg';
                 const svg = document.createElementNS(svgNS, 'svg');
-                svg.setAttribute('width','100%');
-                svg.setAttribute('height','280');
+                // Size the svg to the container so coordinates scale correctly
+                const w = mapEl.clientWidth || 320;
+                const h = mapEl.clientHeight || 280;
+                svg.setAttribute('width', w);
+                svg.setAttribute('height', h);
+                svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
                 svg.style.background = 'transparent';
 
                 const cauldrons = data.cauldrons || [];
-                // Map lat/lon to box
+                // Map lat/lon to box (with robust fallbacks)
                 let minLat=90, maxLat=-90, minLon=180, maxLon=-180;
                 cauldrons.forEach(c => {
-                    if (c.lat) {minLat=Math.min(minLat,c.lat); maxLat=Math.max(maxLat,c.lat)}
-                    if (c.lon) {minLon=Math.min(minLon,c.lon); maxLon=Math.max(maxLon,c.lon)}
+                    const lat = Number(c.lat);
+                    const lon = Number(c.lon);
+                    if (!Number.isNaN(lat)) { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); }
+                    if (!Number.isNaN(lon)) { minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon); }
                 });
-                if (minLat===90) {minLat=0;maxLat=1;minLon=0;maxLon=1}
+                // If no valid coordinates found, center everything
+                if (minLat === 90 || maxLat === -90) { minLat = 0; maxLat = 1; }
+                if (minLon === 180 || maxLon === -180) { minLon = 0; maxLon = 1; }
 
-                cauldrons.forEach(c => {
-                    const x = ((c.lon - minLon) / (maxLon - minLon || 1)) * 280 + 10;
-                    const y = ((maxLat - (c.lat || minLat)) / (maxLat - minLat || 1)) * 240 + 20;
+                const margin = 12;
+                const innerW = Math.max(32, w - margin*2);
+                const innerH = Math.max(32, h - margin*2);
+
+                // Keep a small map of used positions to apply jitter to overlapping nodes
+                const used = {};
+                const positions = {}; // id -> {x,y,el}
+
+                cauldrons.forEach((c, idx) => {
+                    const lat = Number(c.lat);
+                    const lon = Number(c.lon);
+                    // Fallback to center if this cauldron lacks coords
+                    const lonVal = Number.isNaN(lon) ? (minLon + maxLon) / 2 : lon;
+                    const latVal = Number.isNaN(lat) ? (minLat + maxLat) / 2 : lat;
+
+                    const xRaw = ((lonVal - minLon) / (maxLon - minLon || 1)) * innerW + margin;
+                    const yRaw = ((maxLat - latVal) / (maxLat - minLat || 1)) * innerH + margin;
+                    // Round positions and apply tiny jitter if colliding
+                    let x = Math.round(xRaw);
+                    let y = Math.round(yRaw);
+                    const key = `${x},${y}`;
+                    if (used[key]) {
+                        // apply small deterministic jitter based on index
+                        const jitter = ((idx % 6) - 3) * 4;
+                        x += jitter;
+                        y += Math.floor(jitter/2);
+                    }
+                    used[`${x},${y}`] = true;
+
                     const g = document.createElementNS(svgNS, 'g');
                     const circle = document.createElementNS(svgNS,'circle');
                     circle.setAttribute('cx', x);
@@ -394,19 +429,224 @@
                     circle.setAttribute('fill','#4facf7');
                     circle.setAttribute('stroke','#fff');
                     circle.setAttribute('stroke-width','0.8');
+                    circle.style.cursor = 'pointer';
                     g.appendChild(circle);
+
+                    // add a title for hover (accessibility)
+                    const title = document.createElementNS(svgNS, 'title');
+                    title.textContent = `${c.name || c.id} (${c.id || ''})`;
+                    g.appendChild(title);
+
                     const label = document.createElementNS(svgNS,'text');
-                    label.setAttribute('x', x+12);
-                    label.setAttribute('y', y+4);
+                    // clamp label position to avoid overflow
+                    const labelX = Math.min(x + 12, w - 60);
+                    const labelY = Math.min(y + 4, h - 6);
+                    label.setAttribute('x', labelX);
+                    label.setAttribute('y', labelY);
                     label.setAttribute('fill','#ddd');
                     label.setAttribute('font-size','11');
                     label.textContent = c.name || c.id;
                     g.appendChild(label);
+
                     svg.appendChild(g);
+
+                    // store position for edge drawing and coloring
+                    positions[c.id] = { x: x, y: y, el: g };
                 });
+
+                // Draw edges (if present) beneath nodes
+                const edges = data.edges || (data.network && data.network.edges) || [];
+                if (Array.isArray(edges) && edges.length>0) {
+                    const edgeGroup = document.createElementNS(svgNS, 'g');
+                    edgeGroup.setAttribute('class','edges');
+                    edges.forEach(e => {
+                        const fromId = e.from || e.src || e.u || e.a;
+                        const toId = e.to || e.dst || e.v || e.b;
+                        if (!fromId || !toId) return;
+                        const p1 = positions[fromId];
+                        const p2 = positions[toId];
+                        if (!p1 || !p2) return;
+                        const line = document.createElementNS(svgNS, 'line');
+                        line.setAttribute('x1', p1.x);
+                        line.setAttribute('y1', p1.y);
+                        line.setAttribute('x2', p2.x);
+                        line.setAttribute('y2', p2.y);
+                        line.setAttribute('stroke', '#55607a');
+                        // scale stroke by travel time where possible
+                        const rawT = e.travel_time_minutes || e.travel_time || e.cost || e.time || 1;
+                        const tnum = Number(rawT) || 1;
+                        const strokeW = Math.max(1, Math.min(6, Math.round(tnum / 2)));
+                        line.setAttribute('stroke-width', String(strokeW));
+                        line.setAttribute('opacity', '0.9');
+                        // attach tooltip
+                        const etitle = document.createElementNS(svgNS, 'title');
+                        etitle.textContent = `from ${fromId} → ${toId}` + (rawT ? ` (${rawT} min)` : '');
+                        line.appendChild(etitle);
+                        edgeGroup.appendChild(line);
+
+                        const tt = e.travel_time_minutes || e.travel_time || e.cost || e.time || null;
+                        if (tt != null) {
+                            const lx = (p1.x + p2.x)/2;
+                            const ly = (p1.y + p2.y)/2;
+                            const tlabel = document.createElementNS(svgNS, 'text');
+                            tlabel.setAttribute('x', lx);
+                            tlabel.setAttribute('y', ly - 6);
+                            tlabel.setAttribute('fill', '#aab');
+                            tlabel.setAttribute('font-size', '10');
+                            tlabel.setAttribute('text-anchor','middle');
+                            tlabel.textContent = String(tt);
+                            edgeGroup.appendChild(tlabel);
+                        }
+                    });
+                    svg.insertBefore(edgeGroup, svg.firstChild);
+                }
+
+                // color nodes by current fill percent using /api/cauldron/status
+                try {
+                    const statusRes = await fetch('/api/cauldron/status');
+                    const statusList = await statusRes.json();
+                    const statusMap = {};
+                    if (Array.isArray(statusList)) {
+                        statusList.forEach(s => { statusMap[s.id] = Number(s.percent_full || ((s.current_level||0)/(s.max_volume||1))*100); });
+                    }
+
+                    function percentToColor(p) {
+                        p = Math.max(0, Math.min(100, p));
+                        if (p <= 75) {
+                            const t = p/75;
+                            const r = Math.round(76 + (241-76)*t);
+                            const g = Math.round(175 + (196-175)*t);
+                            const b = Math.round(247 + (15-247)*t);
+                            return `rgb(${r},${g},${b})`;
+                        } else {
+                            const t = (p-75)/25;
+                            const r = Math.round(241 + (231-241)*t);
+                            const g = Math.round(196 + (76-196)*t);
+                            const b = Math.round(15 + (60-15)*t);
+                            return `rgb(${r},${g},${b})`;
+                        }
+                    }
+
+                    Object.keys(positions).forEach(id => {
+                        const pos = positions[id];
+                        const pct = statusMap[id];
+                        const circle = pos && pos.el && pos.el.querySelector('circle');
+                        if (circle) {
+                            if (typeof pct === 'number') {
+                                circle.setAttribute('fill', percentToColor(pct));
+                            } else {
+                                circle.setAttribute('fill', '#4facf7');
+                            }
+                        }
+                        // attach hover tooltip details for nodes
+                        try {
+                            const nodeTitle = pos.el.querySelector('title');
+                            const details = [];
+                            const pctTxt = typeof pct === 'number' ? `${pct.toFixed(1)}%` : 'N/A';
+                            details.push(`Fill: ${pctTxt}`);
+                            const s = statusList && statusList.find(x=>x.id===id);
+                            if (s) {
+                                if (s.fill_rate_per_min) details.push(`Fill rate: ${s.fill_rate_per_min} L/min`);
+                                if (s.drain_rate_per_min) details.push(`Drain rate: ${s.drain_rate_per_min} L/min`);
+                                if (s.time_to_full_seconds != null) details.push(`TtF: ${Math.round(Number(s.time_to_full_seconds))}s`);
+                            }
+                            if (nodeTitle) nodeTitle.textContent = `${nodeTitle.textContent}\n${details.join(' | ')}`;
+                        } catch (e) {
+                            // ignore
+                        }
+                    });
+                } catch (err) {
+                    console.warn('Could not fetch cauldron status for coloring:', err);
+                }
+
                 mapEl.appendChild(svg);
+                // store current svg for route drawing
+                window._networkSvg = svg;
+                window._networkPositions = positions;
             } catch (e) {
                 console.error('Could not load network', e);
+            }
+        }
+
+        // --- Greedy route optimizer (client-side prototype) ---
+        async function computeGreedyRoutes() {
+            try {
+                const resNet = await fetch('/api/network');
+                const net = await resNet.json();
+                const resStatus = await fetch('/api/cauldron/status');
+                const stat = await resStatus.json();
+                const statusMap = {};
+                stat.forEach(s => { statusMap[s.id] = s; });
+
+                const positions = window._networkPositions || {};
+                const svg = window._networkSvg;
+                if (!svg) {
+                    alert('Network not loaded yet');
+                    return;
+                }
+
+                // couriers available
+                const couriers = (net.couriers && net.couriers.length) || (net.couriers ? 1 : 1);
+                const market = net.market || net.market || { id: 'market', latitude: 0, longitude: 0 };
+                // build list of urgent cauldrons sorted by time to full
+                const urgent = Object.keys(statusMap).map(id => ({ id, s: statusMap[id] }))
+                    .filter(x => x.s && (x.s.time_to_full_seconds != null))
+                    .sort((a,b) => Number(a.s.time_to_full_seconds) - Number(b.s.time_to_full_seconds));
+
+                // clear existing route layer
+                const prevRoutes = svg.querySelectorAll('.route');
+                prevRoutes.forEach(n => n.remove());
+
+                const colors = ['#ff7f50','#7fffd4','#ffd700','#ff69b4','#87cefa','#a0e7a0'];
+                const routes = [];
+
+                // greedy assignment: each courier gets the next most urgent cauldron
+                for (let i=0;i<Math.max(1,couriers);i++) {
+                    const pick = urgent.shift();
+                    if (!pick) break;
+                    const cid = pick.id;
+                    const pos = positions[cid];
+                    // market position fallback
+                    const marketPos = positions[market.id] || { x: svg.viewBox.baseVal.width/2 || (svg.clientWidth/2), y: 20 };
+                    if (!pos) continue;
+
+                    // draw a route polyline market -> cauldron -> market
+                    const routeGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+                    routeGroup.setAttribute('class','route');
+                    const path = document.createElementNS('http://www.w3.org/2000/svg','polyline');
+                    const pts = `${marketPos.x},${marketPos.y} ${pos.x},${pos.y} ${marketPos.x},${marketPos.y}`;
+                    path.setAttribute('points', pts);
+                    path.setAttribute('fill','none');
+                    path.setAttribute('stroke', colors[i % colors.length]);
+                    path.setAttribute('stroke-width','3');
+                    path.setAttribute('opacity','0.9');
+                    routeGroup.appendChild(path);
+
+                    const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+                    label.setAttribute('x', (marketPos.x + pos.x)/2);
+                    label.setAttribute('y', (marketPos.y + pos.y)/2 - 8);
+                    label.setAttribute('fill', colors[i % colors.length]);
+                    label.setAttribute('font-size','11');
+                    label.setAttribute('text-anchor','middle');
+                    // compute simple ETA using travel_time if edge exists
+                    let travel = null;
+                    // find edge
+                    const allEdges = net.edges || (net.network && net.network.edges) || [];
+                    const edge = allEdges.find(e => (e.from===market.id && e.to===cid) || (e.to===market.id && e.from===cid));
+                    if (edge) travel = edge.travel_time_minutes || edge.travel_time || edge.cost || edge.time;
+                    label.textContent = `ETA: ${travel != null ? travel + 'm' : 'n/a'}`;
+                    routeGroup.appendChild(label);
+
+                    svg.appendChild(routeGroup);
+                    routes.push({ courier: i+1, cauldron: cid, travel });
+                }
+
+                // show routes summary
+                const matchResults = document.getElementById('match-results');
+                matchResults.innerHTML = '<b>Planned Routes</b><br>' + routes.map(r => `Courier ${r.courier}: ${r.cauldron} (${r.travel||'n/a'} min)`).join('<br>');
+            } catch (err) {
+                console.error('Route optimizer failed', err);
+                alert('Route optimizer failed: ' + err);
             }
         }
 
@@ -514,6 +754,74 @@
                     d.textContent = `${u.cauldron_id} ${u.day} drained ${u.event.drained}L (from ${u.event.start} to ${u.event.end})`;
                     out.appendChild(d);
                 });
+            }
+        });
+
+        document.getElementById('optimize-routes').addEventListener('click', async () => {
+            try {
+                // ask server to compute optimized routes
+                const res = await fetch('/api/optimizer/compute');
+                const plan = await res.json();
+                const svg = window._networkSvg;
+                const positions = window._networkPositions || {};
+                if (!svg) { alert('Load network first'); return; }
+
+                // clear previous route layers
+                const prev = svg.querySelectorAll('.route'); prev.forEach(n=>n.remove());
+
+                if (plan.error) {
+                    alert('Optimizer error: ' + plan.error);
+                    return;
+                }
+
+                const colors = ['#ff7f50','#7fffd4','#ffd700','#ff69b4','#87cefa','#a0e7a0','#f08080','#dda0dd'];
+                const out = document.getElementById('match-results');
+                out.innerHTML = `<b>Optimizer: ${plan.required_couriers} couriers required</b><br>`;
+
+                (plan.routes || []).forEach((r, idx) => {
+                    const seq = r.sequence || [];
+                    const pts = [];
+                    const marketPos = positions[ (window.staticCauldrons && window.staticCauldrons.market && window.staticCauldrons.market.id) || 'market' ] || null;
+                    // fallback to center top
+                    const fallbackMarket = { x: svg.viewBox.baseVal.width/2 || (svg.clientWidth/2), y: 18 };
+                    const mpos = positions[(window._networkPositions && Object.keys(window._networkPositions)[0]) ? Object.keys(window._networkPositions)[0] : 'market'] || fallbackMarket;
+                    // start at market
+                    pts.push([mpos.x, mpos.y]);
+                    seq.forEach(cid => {
+                        const p = positions[cid];
+                        if (p) pts.push([p.x, p.y]);
+                    });
+                    pts.push([mpos.x, mpos.y]);
+
+                    // draw polyline
+                    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+                    g.setAttribute('class','route');
+                    const poly = document.createElementNS('http://www.w3.org/2000/svg','polyline');
+                    poly.setAttribute('points', pts.map(p=>p.join(',')).join(' '));
+                    poly.setAttribute('fill','none');
+                    poly.setAttribute('stroke', colors[idx % colors.length]);
+                    poly.setAttribute('stroke-width','3');
+                    poly.setAttribute('opacity','0.95');
+                    g.appendChild(poly);
+
+                    // add label
+                    const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+                    const mid = pts[Math.floor(pts.length/2)];
+                    lbl.setAttribute('x', mid[0]); lbl.setAttribute('y', mid[1]-8);
+                    lbl.setAttribute('fill', colors[idx % colors.length]);
+                    lbl.setAttribute('font-size','11');
+                    lbl.setAttribute('text-anchor','middle');
+                    lbl.textContent = `Courier ${r.courier}` + (r.impossible ? ' (!!)' : '');
+                    g.appendChild(lbl);
+
+                    svg.appendChild(g);
+
+                    out.innerHTML += `Courier ${r.courier}: ${seq.join(' → ')}${r.impossible ? ' — UNREACHABLE' : ''}<br>`;
+                });
+
+            } catch (err) {
+                console.error(err);
+                alert('Optimizer failed: ' + err);
             }
         });
 
