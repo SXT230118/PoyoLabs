@@ -1978,11 +1978,169 @@ def data_historic():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 
+@app.route('/api/debug/ticket-matching/<ticket_id>')
+@requires_auth
+def debug_ticket_matching(ticket_id):
+    """Debug endpoint to inspect ticket matching details for a specific ticket."""
+    try:
+        # Fetch tickets
+        tickets_raw = _fetch_with_timeout('/api/Tickets', timeout=5)
+        if tickets_raw is None:
+            return jsonify({'error': 'Could not fetch tickets'}), 500
+        
+        tickets_list = tickets_raw if isinstance(tickets_raw, list) else (tickets_raw.get('data') if isinstance(tickets_raw, dict) else [])
+        
+        # Find the ticket
+        ticket = None
+        for t in tickets_list:
+            tid = t.get('id') or t.get('ticket_id') or t.get('ticketId')
+            if str(tid) == str(ticket_id):
+                ticket = t
+                break
+        
+        if not ticket:
+            return jsonify({'error': f'Ticket {ticket_id} not found'}), 404
+        
+        # Fetch data
+        data_raw = _fetch_with_timeout('/api/Data', timeout=10)
+        if data_raw is None:
+            return jsonify({'error': 'Could not fetch historical data'}), 500
+        
+        data_list = data_raw if isinstance(data_raw, list) else (data_raw.get('data') if isinstance(data_raw, dict) and isinstance(data_raw.get('data'), list) else [])
+        
+        # Build series
+        series_map = {}
+        for rec in data_list:
+            ts = _parse_timestamp(rec.get('timestamp') or rec.get('time') or rec.get('t'))
+            if ts is None:
+                continue
+            levels = rec.get('cauldron_levels') or rec.get('levels') or {}
+            if not isinstance(levels, dict):
+                continue
+            for cid, val in levels.items():
+                try:
+                    v = float(val)
+                except Exception:
+                    continue
+                series_map.setdefault(cid, []).append((ts, v))
+        
+        # Sort series
+        for cid in series_map:
+            series_map[cid].sort(key=lambda x: x[0])
+        
+        # Get ticket info
+        cauldron_id = ticket.get('cauldronId') or ticket.get('cauldron_id') or ticket.get('cauldron')
+        date_str = ticket.get('date') or ticket.get('day') or ticket.get('ticket_date')
+        amount = _extract_ticket_amount(ticket)
+        
+        # Parse date
+        match_day = None
+        if date_str:
+            try:
+                if len(date_str) <= 10:
+                    match_day = datetime.fromisoformat(date_str).date().isoformat()
+                else:
+                    dt = _parse_timestamp(date_str)
+                    if dt:
+                        match_day = dt.date().isoformat()
+            except Exception:
+                pass
+        
+        # Find drain events
+        if not cauldron_id or cauldron_id not in series_map:
+            return jsonify({
+                'ticket': ticket,
+                'error': 'Cauldron not found in historical data',
+                'cauldron_id': cauldron_id
+            })
+        
+        series = series_map[cauldron_id]
+        static = next((c for c in factory_static_data['cauldrons'] if c['id'] == cauldron_id), None)
+        fill_rate = static.get('fill_rate_per_min', 0) if static else 0
+        
+        # Find all drains for this cauldron
+        all_drains = []
+        i = 0
+        n = len(series)
+        while i < n-1:
+            t0, v0 = series[i]
+            j = i+1
+            if series[j][1] < v0:
+                start_t = t0
+                start_v = v0
+                end_t = series[j][0]
+                end_v = series[j][1]
+                j += 1
+                while j < n and series[j][1] < series[j-1][1]:
+                    end_t = series[j][0]
+                    end_v = series[j][1]
+                    j += 1
+                
+                duration_min = (end_t - start_t).total_seconds() / 60.0
+                drained = max(0.0, start_v - end_v)
+                drained_adjusted = drained + (fill_rate * duration_min)
+                
+                all_drains.append({
+                    'start': start_t.isoformat(),
+                    'end': end_t.isoformat(),
+                    'day': start_t.date().isoformat(),
+                    'start_v': round(start_v, 2),
+                    'end_v': round(end_v, 2),
+                    'duration_min': round(duration_min, 1),
+                    'drained': round(drained_adjusted, 2),
+                    'fill_rate': fill_rate
+                })
+                i = j
+            else:
+                i += 1
+        
+        # Find matching drains (±1 day)
+        matching_drains = []
+        if match_day:
+            try:
+                match_date = datetime.fromisoformat(match_day).date()
+                for drain in all_drains:
+                    drain_date = datetime.fromisoformat(drain['day']).date()
+                    if abs((drain_date - match_date).days) <= 1:
+                        matching_drains.append(drain)
+            except Exception:
+                pass
+        
+        total_calculated = sum(d['drained'] for d in matching_drains) if matching_drains else None
+        diff = None
+        if amount is not None and total_calculated is not None:
+            diff = round(amount - total_calculated, 2)
+        
+        return jsonify({
+            'ticket': {
+                'id': ticket_id,
+                'cauldron_id': cauldron_id,
+                'date': date_str,
+                'match_day': match_day,
+                'amount': amount
+            },
+            'fill_rate': fill_rate,
+            'all_drains_count': len(all_drains),
+            'all_drains': all_drains[:10],  # Limit to first 10 for readability
+            'matching_drains_count': len(matching_drains),
+            'matching_drains': matching_drains,
+            'total_calculated': total_calculated,
+            'difference': diff,
+            'suspicious': abs(diff) > 10 and abs(diff) > 0.2 * max(1.0, amount) if diff is not None else None
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/network')
 @requires_auth
 def get_network():
     """Return static factory network + cauldron positions for frontend visualization."""
     return jsonify(factory_static_data)
+
 
 
 def _extract_ticket_amount(ticket):
@@ -2116,30 +2274,48 @@ def tickets_match():
         calculated = None
         matched_events = []
         
-        # *** BUG FIX 1: 'cid' was used here, but it should be 'cauldron_id' ***
+        # Look for drain events on the ticket date OR ±1 day (to handle timezone/timing issues)
         if cauldron_id and match_day and cauldron_id in drains_by_cauldron_day:
-            # use our drains_by_cauldron_day lookup
-            day_drains = drains_by_cauldron_day.get(cauldron_id, {}).get(match_day, [])
-            calculated = sum(d['drained'] for d in day_drains)
-            matched_events = day_drains
+            # Parse match_day
+            try:
+                match_date = datetime.fromisoformat(match_day).date()
+                # Check current day and ±1 day
+                dates_to_check = [
+                    (match_date - timedelta(days=1)).isoformat(),
+                    match_day,
+                    (match_date + timedelta(days=1)).isoformat()
+                ]
+                
+                for check_day in dates_to_check:
+                    day_drains = drains_by_cauldron_day.get(cauldron_id, {}).get(check_day, [])
+                    matched_events.extend(day_drains)
+                
+                if matched_events:
+                    calculated = sum(d['drained'] for d in matched_events)
+            except Exception:
+                pass
 
         # If we couldn't compute from events, fallback to per-sample diff sum
         if calculated is None and cauldron_id:
             # try naive computation over series_map
             series = series_map.get(cauldron_id, [])
-            # sum all decreases within that calendar day
+            # sum all decreases within that calendar day ±1 day
             if match_day:
-                s = 0.0
-                for i in range(len(series)-1):
-                    a_ts, a_v = series[i]
-                    b_ts, b_v = series[i+1]
-                    if a_ts.date().isoformat() != match_day:
-                        continue
-                    if b_ts.date().isoformat() != match_day:
-                        continue
-                    if b_v < a_v:
-                        s += (a_v - b_v)
-                calculated = s
+                try:
+                    match_date = datetime.fromisoformat(match_day).date()
+                    s = 0.0
+                    for i in range(len(series)-1):
+                        a_ts, a_v = series[i]
+                        b_ts, b_v = series[i+1]
+                        # Check if either timestamp is within ±1 day of match_day
+                        a_day = a_ts.date()
+                        b_day = b_ts.date()
+                        if abs((a_day - match_date).days) <= 1 and abs((b_day - match_date).days) <= 1:
+                            if b_v < a_v:
+                                s += (a_v - b_v)
+                    calculated = s if s > 0 else None
+                except Exception:
+                    pass
 
         # Determine suspicious: absolute diff > 5L and >10% of ticket
         suspicious = False
@@ -2147,9 +2323,14 @@ def tickets_match():
         reason = ''
         if amount is not None and calculated is not None:
             diff = round(amount - calculated, 2)
-            if abs(diff) > 5 and abs(diff) > 0.1 * max(1.0, amount):
+            # More lenient threshold: 10L or >20% difference
+            if abs(diff) > 10 and abs(diff) > 0.2 * max(1.0, amount):
                 suspicious = True
-                reason = f'Difference {diff}L exceeds threshold.'
+                reason = f'Difference {diff}L exceeds threshold (>10L and >20%).'
+        elif amount is not None and calculated is None:
+            # No drain event found - this is suspicious
+            suspicious = True
+            reason = 'No matching drain event found in historical data.'
         else:
             reason = 'Insufficient data to compute match.'
 
