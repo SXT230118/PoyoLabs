@@ -124,6 +124,7 @@ class AgentWorkflow:
             'forecast_fills': self._forecast_fills,
             'get_status': self._get_status,
             'dispatch_courier': self._dispatch_courier,
+            'dispatch_bulk': self._dispatch_bulk,
             'optimize_routes': self._optimize_routes,
             'analyze_network': self._analyze_network,
             'detect_anomalies': self._detect_anomalies,
@@ -330,6 +331,71 @@ class AgentWorkflow:
                 'error': str(e),
                 'status': 'failed',
                 'cauldron_id': cauldron_id
+            }
+    
+    def _dispatch_bulk(self, threshold=50):
+        """Tool: Dispatch couriers to all cauldrons above a fill threshold"""
+        try:
+            # Get current status of all cauldrons
+            status_data = self._get_status()
+            if not isinstance(status_data, list):
+                return {'error': 'Could not fetch cauldron status', 'status': 'failed'}
+            
+            # Filter cauldrons above threshold
+            dispatched = []
+            already_draining = []
+            already_empty = []
+            errors = []
+            
+            for cauldron in status_data:
+                cauldron_id = cauldron.get('id')
+                percent_full = cauldron.get('percent_full', 0)
+                
+                if percent_full >= threshold:
+                    result = self._dispatch_courier(cauldron_id)
+                    if result.get('status') == 'success':
+                        if result.get('already_draining'):
+                            already_draining.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name'),
+                                'percent_full': percent_full,
+                                'progress': result.get('drain_progress', 0)
+                            })
+                        elif result.get('already_empty'):
+                            already_empty.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name')
+                            })
+                        else:
+                            dispatched.append({
+                                'cauldron_id': cauldron_id,
+                                'cauldron_name': result.get('cauldron_name'),
+                                'percent_full': percent_full,
+                                'estimated_minutes': result.get('estimated_minutes', 0)
+                            })
+                    else:
+                        errors.append({
+                            'cauldron_id': cauldron_id,
+                            'error': result.get('error', 'Unknown error')
+                        })
+            
+            return {
+                'status': 'success',
+                'threshold': threshold,
+                'total_dispatched': len(dispatched),
+                'total_already_draining': len(already_draining),
+                'total_already_empty': len(already_empty),
+                'total_errors': len(errors),
+                'dispatched': dispatched,
+                'already_draining': already_draining,
+                'already_empty': already_empty,
+                'errors': errors
+            }
+            
+        except Exception as e:
+            return {
+                'error': str(e),
+                'status': 'failed'
             }
     
     def _optimize_routes(self):
@@ -653,7 +719,11 @@ class AgentWorkflow:
         elif any(word in msg_lower for word in ['forecast', 'full', 'overflow', 'time', 'when', 'predict']):
             return {'type': 'predict', 'description': 'Forecast fill times and overflow risks'}
         elif any(word in msg_lower for word in ['dispatch', 'send', 'empty', 'courier', 'drain']):
-            return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
+            # Check if it's a bulk dispatch request
+            if any(word in msg_lower for word in ['all', 'multiple', 'every', 'bulk', '50%', 'above', 'over', 'threshold']):
+                return {'type': 'action_bulk', 'description': 'Dispatch couriers to multiple cauldrons'}
+            else:
+                return {'type': 'action', 'description': 'Dispatch courier to manage cauldron'}
         elif any(word in msg_lower for word in ['optimize', 'route', 'witch', 'efficient']):
             return {'type': 'optimize', 'description': 'Optimize courier routes for efficiency'}
         elif any(word in msg_lower for word in ['status', 'how', 'level', 'current', 'what']):
@@ -706,6 +776,18 @@ class AgentWorkflow:
             return {
                 'steps': ['Get forecasts', 'Detect anomalies', 'Prioritize risks'],
                 'tools': ['forecast_fills', 'detect_anomalies']
+            }
+        elif intent_type == 'action_bulk':
+            # Extract threshold from message if mentioned
+            import re
+            threshold = 50  # default
+            match = re.search(r'(\d+)\s*%', message)
+            if match:
+                threshold = int(match.group(1))
+            return {
+                'steps': ['Get current status', 'Dispatch to all above threshold', 'Report results'],
+                'tools': ['get_status', 'dispatch_bulk'],
+                'params': {'threshold': threshold}
             }
         elif intent_type == 'action':
             # Extract cauldron ID from message
@@ -798,6 +880,8 @@ class AgentWorkflow:
             # Handle tools with parameters
             if tool_name == 'dispatch_courier' and 'cauldron_id' in params:
                 return tool_func(params['cauldron_id'])
+            elif tool_name == 'dispatch_bulk' and 'threshold' in params:
+                return tool_func(params['threshold'])
             else:
                 return tool_func()
         except Exception as e:
@@ -808,6 +892,8 @@ class AgentWorkflow:
         if isinstance(result, dict):
             if 'error' in result:
                 return f"Error: {result['error']}"
+            elif 'total_dispatched' in result:
+                return f"Dispatched {result['total_dispatched']} couriers, {result['total_already_draining']} already draining"
             elif 'matches' in result:
                 suspicious = len([m for m in result['matches'] if m.get('suspicious')])
                 return f"Found {suspicious} suspicious tickets"
@@ -917,6 +1003,34 @@ class AgentWorkflow:
                     response += f"  - {a['cauldron']}: {a['details']} (severity: {a['severity']})\n"
             
             return response
+        
+        elif intent_type == 'action_bulk':
+            bulk = tool_results.get('dispatch_bulk', {})
+            if bulk.get('status') == 'success':
+                dispatched = bulk.get('total_dispatched', 0)
+                draining = bulk.get('total_already_draining', 0)
+                empty = bulk.get('total_already_empty', 0)
+                threshold = bulk.get('threshold', 50)
+                
+                response = f"✅ **Bulk Courier Dispatch Complete!**\n\n"
+                response += f"• **Threshold:** {threshold}% full or more\n"
+                response += f"• **New Dispatches:** {dispatched} courier(s) sent\n"
+                response += f"• **Already Draining:** {draining} cauldron(s)\n"
+                response += f"• **Already Empty:** {empty} cauldron(s)\n\n"
+                
+                if bulk.get('dispatched'):
+                    response += "**Newly Dispatched:**\n"
+                    for d in bulk['dispatched'][:5]:
+                        response += f"  - {d['cauldron_name']}: {d['percent_full']:.1f}% → ~{d['estimated_minutes']:.0f} min\n"
+                
+                if bulk.get('already_draining'):
+                    response += "\n**Already Draining:**\n"
+                    for d in bulk['already_draining'][:3]:
+                        response += f"  - {d['cauldron_name']}: {d['progress']:.1f}% complete\n"
+                
+                return response
+            else:
+                return f"⚠️ Bulk dispatch failed: {bulk.get('error', 'Unknown error')}"
         
         elif intent_type == 'predict':
             forecasts = tool_results.get('forecast_fills', [])
